@@ -3,9 +3,9 @@ import { cookies } from "next/headers";
 import { jwtVerify } from "jose";
 import dbConnect from "@/lib/db";
 import User from "@/models/User";
-import "@/models/Project"; // Required so Mongoose can populate the starred projects
+import "@/models/Project"; 
 
-// Helper function to securely get the user ID from the cookie
+// securely get the user ID from the cookie
 async function getUserIdFromToken() {
   const cookieStore = await cookies();
   const token = cookieStore.get("foundr_token")?.value;
@@ -14,7 +14,7 @@ async function getUserIdFromToken() {
   try {
     const SECRET = new TextEncoder().encode(process.env.JWT_SECRET || "fallback_secret");
     const { payload } = await jwtVerify(token, SECRET);
-    return payload.id; // Return the user's MongoDB _id
+    return payload.id; 
   } catch (error) {
     return null;
   }
@@ -30,7 +30,7 @@ export async function GET() {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // Find the user and populate the projects they have starred
+    // Find the user and populate the projects starred
     const user = await User.findById(userId)
       .populate("starredProjects")
       .lean();
@@ -46,7 +46,7 @@ export async function GET() {
   }
 }
 
-// 2. PATCH: Update User Settings (Like their City)
+// 2. PATCH: Update User Settings 
 export async function PATCH(req: Request) {
   try {
     await dbConnect();
@@ -66,7 +66,7 @@ export async function PATCH(req: Request) {
     const updatedUser = await User.findByIdAndUpdate(
       userId,
       { city },
-      { new: true } // Returns the updated document
+      { new: true } 
     ).lean();
 
     return NextResponse.json({ 

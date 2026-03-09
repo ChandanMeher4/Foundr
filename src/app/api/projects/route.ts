@@ -8,8 +8,7 @@ export async function GET() {
   try {
     await dbConnect();
 
-    // Only fetch projects that are approved and live
-    // We 'populate' developerName to get the company object instead of just the ID
+    //fetch projects that are approved and live
     const projects = await Project.find({ status: "Live" })
       .populate("developerName", "name")
       .lean();
@@ -25,7 +24,6 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
-    // 1. SECURITY: Get the actual developer's ID from their secure cookie
     const cookieStore = await cookies();
     const token = cookieStore.get("foundr_token")?.value;
 
@@ -41,21 +39,21 @@ export async function POST(req: Request) {
     );
     const { payload } = await jwtVerify(token, SECRET);
 
-    // 2. Parse the incoming form data
+    // Parse the incoming form data
     const body = await req.json();
 
     await dbConnect();
 
-    // 3. Mold the data into the Mongoose Schema format
+    // Mold the data into the Mongoose Schema format
     const newProject = await Project.create({
       title: body.title,
       description: body.description,
-      developerName: payload.id, // Successfully linked to the real logged-in user!
+      developerName: payload.id, 
 
       // Formatting for the 2dsphere index
       location: {
         type: "Point",
-        coordinates: body.location.coordinates, // Mapbox/Geoapify [lon, lat]
+        coordinates: body.location.coordinates, 
         address: body.location.address,
       },
 
@@ -66,7 +64,7 @@ export async function POST(req: Request) {
       expectedCompletion: body.expectedCompletion,
 
       imageUrls: body.imageUrls,
-      status: "Pending Review", // Sends it to your Admin dashboard
+      status: "Pending Review", 
     });
 
     return NextResponse.json(

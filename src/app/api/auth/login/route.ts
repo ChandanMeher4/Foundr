@@ -15,9 +15,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Email and password are required" }, { status: 400 });
     }
 
-    // 2. Find the user
-    // CRITICAL: Because we set `select: false` on the password in our schema, 
-    // we MUST use `.select("+password")` here to temporarily retrieve it for comparison.
     const user = await User.findOne({ email }).select("+password");
     if (!user) {
       return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
@@ -30,7 +27,6 @@ export async function POST(req: Request) {
     }
 
     // 4. Create the JWT Payload
-    // We embed the user's ID, Role, and City directly into the token!
     const secret = new TextEncoder().encode(process.env.JWT_SECRET || "fallback_secret");
     const alg = "HS256";
     
@@ -41,17 +37,16 @@ export async function POST(req: Request) {
     })
       .setProtectedHeader({ alg })
       .setIssuedAt()
-      .setExpirationTime("7d") // Token expires in 7 days
+      .setExpirationTime("7d") 
       .sign(secret);
 
     // 5. Set the HTTP-Only Cookie
-    // In Next.js 15, cookies() is asynchronous, so we must await it.
     const cookieStore = await cookies();
     cookieStore.set("foundr_token", jwt, {
-      httpOnly: true, // Prevents JavaScript from reading the cookie
-      secure: process.env.NODE_ENV === "production", // Only uses HTTPS in production
-      sameSite: "strict", // CSRF protection
-      maxAge: 60 * 60 * 24 * 7, // 7 days in seconds
+      httpOnly: true, 
+      secure: process.env.NODE_ENV === "production", 
+      sameSite: "strict", 
+      maxAge: 60 * 60 * 24 * 7, 
       path: "/",
     });
 

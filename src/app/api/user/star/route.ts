@@ -35,10 +35,10 @@ export async function POST(req: Request) {
     const isAlreadyStarred = user.starredProjects.includes(projectId);
 
     if (isAlreadyStarred) {
-      // If it's there, remove it ($pull)
+      
       user.starredProjects.pull(projectId);
     } else {
-      // If it's not there, add it ($push)
+      
       user.starredProjects.push(projectId);
     }
 

@@ -4,13 +4,13 @@ import { jwtVerify } from "jose";
 import LogoutButton from "./LogoutButton";
 
 export default async function Navbar() {
-  // 1. Read the secure cookie
+
   const cookieStore = await cookies();
   const token = cookieStore.get("foundr_token")?.value;
 
   let user: { name?: string; role?: string; id?: string } | null = null;
 
-  // 2. Decode the user's role if they are logged in
+  
   if (token) {
     try {
       const SECRET = new TextEncoder().encode(
@@ -77,7 +77,7 @@ export default async function Navbar() {
               </Link>
 
               <div className="pl-4 ml-2 border-l border-stone-700 flex items-center gap-3">
-                {/* Clickable Avatar */}
+                
                 <Link
                   href="/profile"
                   className="w-8 h-8 rounded-full bg-amber-400 text-stone-900 flex items-center justify-center text-xs font-black hover:bg-amber-300 transition-colors shadow-md"

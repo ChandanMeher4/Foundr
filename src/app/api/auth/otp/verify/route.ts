@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import dbConnect from "@/lib/db"; // Make sure this matches your DB import path
+import dbConnect from "@/lib/db"; 
 import User from "@/models/User";
-import { SignJWT } from "jose"; // We use jose for Next.js App Router compatibility
+import { SignJWT } from "jose"; 
 import { cookies } from "next/headers";
 
 export async function POST(req: Request) {
@@ -13,7 +13,7 @@ export async function POST(req: Request) {
     const user = await User.findOne({ 
       email, 
       otp, 
-      otpExpiry: { $gt: new Date() } // Ensures the current time is before the expiry time
+      otpExpiry: { $gt: new Date() } 
     });
 
     if (!user) {
@@ -35,7 +35,7 @@ export async function POST(req: Request) {
     })
       .setProtectedHeader({ alg: "HS256" })
       .setIssuedAt()
-      .setExpirationTime("7d") // Keeps them logged in for 7 days
+      .setExpirationTime("7d") 
       .sign(SECRET);
 
     // 4. Set the HTTP-Only Cookie (This actually logs them in!)
@@ -44,7 +44,7 @@ export async function POST(req: Request) {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "strict",
-      maxAge: 60 * 60 * 24 * 7, // 7 days in seconds
+      maxAge: 60 * 60 * 24 * 7, 
       path: "/",
     });
     

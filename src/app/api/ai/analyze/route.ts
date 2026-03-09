@@ -3,12 +3,10 @@ import OpenAI from "openai";
 
 export async function POST(req: Request) {
   try {
-    // 1. Check for the Groq key
     if (!process.env.GROQ_API_KEY) {
       return NextResponse.json({ error: "Groq API key not configured." }, { status: 500 });
     }
 
-    // 2. The Magic Trick: Point the OpenAI SDK to Groq's base URL!
     const groq = new OpenAI({
       apiKey: process.env.GROQ_API_KEY,
       baseURL: "https://api.groq.com/openai/v1", 
@@ -27,7 +25,6 @@ export async function POST(req: Request) {
       Format it clearly with bullet points. Do not include introductory or concluding fluff, just the facts.
     `;
 
-    // 3. Call Meta's Llama 3 model running on Groq's hyper-fast servers
     const completion = await groq.chat.completions.create({
       model: "openai/gpt-oss-120b", 
       messages: [

@@ -9,7 +9,6 @@ export async function PATCH(
   try {
     await dbConnect();
     
-    // Await params in Next.js 15
     const resolvedParams = await params;
     const body = await request.json();
     
@@ -20,7 +19,7 @@ export async function PATCH(
         status: body.status,
         isVerified: body.isVerified 
       },
-      { new: true } // Returns the updated document
+      { new: true } 
     );
 
     if (!updatedProject) {

@@ -6,7 +6,7 @@ const ProjectSchema = new Schema(
     description: { type: String, required: true },
     developerName: { type: Schema.Types.ObjectId, ref: "User", required: true },
 
-    // The GeoJSON Location Object
+    //GeoJSON Location Object
     location: {
       type: { type: String, enum: ["Point"], default: "Point", required: true },
       coordinates: { type: [Number], required: true }, // [longitude, latitude]
@@ -19,7 +19,6 @@ const ProjectSchema = new Schema(
       required: true,
     },
 
-    // NEW: Aligning with your updated form fields
     constructionStage: {
       type: String,
       enum: ["Planning", "Foundation", "Structural", "Finishing"],
@@ -29,7 +28,6 @@ const ProjectSchema = new Schema(
     minInvestment: { type: Number, required: true },
     expectedCompletion: { type: Date, required: true },
 
-    // Legacy fields (optional based on your UI needs)
     fundingGoal: { type: Number, default: 0 },
     currentFunding: { type: Number, default: 0 },
     investors: [

@@ -11,7 +11,6 @@ export default function ImageCarousel({
 }) {
   const [currentImg, setCurrentImg] = useState(0);
 
-  // Failsafe if there are no images
   if (!imageUrls || imageUrls.length === 0) {
     return (
       <div className="h-96 w-full bg-stone-100 rounded-2xl shadow-sm flex items-center justify-center">

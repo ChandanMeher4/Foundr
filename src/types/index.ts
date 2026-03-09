@@ -1,4 +1,3 @@
-// src/types/index.ts
 import { Types } from "mongoose";
 
 export interface IProject {
@@ -7,7 +6,7 @@ export interface IProject {
   description: string;
   developerName?: { _id: string; name: string } | any;
 
-  // THE FIX: Tell TypeScript this is now a GeoJSON object!
+  
   location: {
     type: string;
     coordinates: number[];
@@ -40,10 +39,9 @@ export interface IContact {
   createdAt?: Date;
 }
 
-// New: You also need a User interface for the Developer accounts
 export interface IUser {
   _id: string;
-  name: string; // Company Name
+  name: string; 
   email: string;
   role: "Developer" | "Admin";
   isVerifiedDeveloper: boolean;

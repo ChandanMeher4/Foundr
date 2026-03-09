@@ -11,7 +11,6 @@ export default function ProfilePage() {
   const [message, setMessage] = useState({ text: "", type: "" });
   const [selectedCity, setSelectedCity] = useState("");
 
-  // 1. Fetch the user's profile on component mount
   useEffect(() => {
     const fetchProfile = async () => {
       try {

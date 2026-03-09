@@ -1,9 +1,7 @@
-// src/components/ProjectCard.tsx
 import Link from "next/link";
 import { IProject } from "@/types";
 
 export default function ProjectCard({ project }: { project: IProject }) {
-  // Calculate the funding progress percentage
   const fundingPercentage = Math.min(
     (project.currentFunding / project.totalValuation) * 100,
     100,

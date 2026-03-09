@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
 import dbConnect from "@/lib/db";
 import Project from "@/models/Project";
-import User from "@/models/User"; // NEW: We need to fetch the investor and developer details!
+import User from "@/models/User"; 
 import { cookies } from "next/headers";
 import { jwtVerify } from "jose";
 import { revalidatePath } from "next/cache";
-import { Resend } from "resend"; // NEW: Import Resend
+import { Resend } from "resend";
 
-// Initialize Resend with your environment variable
+// Initialize Resend with environment variable
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 export async function POST(
@@ -46,7 +46,7 @@ export async function POST(
         { status: 404 },
       );
 
-    // 2. Fetch the investor's details so we can put them in the email
+    // 2. Fetch the investor's details 
     const investor = await User.findById(investorId);
 
     if (amount < project.minInvestment) {
@@ -58,7 +58,7 @@ export async function POST(
       );
     }
 
-    // 3. Increment the funding AND push the investor into the array
+    // 3. Increment the funding and push the investor into the array
     const updatedProject = await Project.findByIdAndUpdate(
       projectId,
       {
@@ -68,13 +68,11 @@ export async function POST(
       { new: true },
     );
 
-    // --- NEW: THE EMAIL BLAST ---
-    // Note: 'onboarding@resend.dev' is the default testing address they give you
+  
     try {
       const { data, error } = await resend.emails.send({
         from: "Foundr <onboarding@resend.dev>",
 
-        // ⚠️ CHANGE THIS to the exact email you used to create your Resend account!
         to: "mchandan1204@gmail.com",
 
         subject: `🎉 New Investment Commitment: ₹${amount.toLocaleString("en-IN")}`,
@@ -95,7 +93,6 @@ export async function POST(
         `,
       });
 
-      // Properly check if Resend's API returned an internal error
       if (error) {
         console.error("Resend API blocked the email:", error);
       } else {

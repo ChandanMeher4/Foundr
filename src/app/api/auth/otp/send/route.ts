@@ -15,7 +15,7 @@ export async function POST(req: Request) {
 
     // Generate 6-digit OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiry = new Date(Date.now() + 10 * 60 * 1000); // Valid for 10 mins
+    const expiry = new Date(Date.now() + 10 * 60 * 1000); 
 
     user.otp = otp;
     user.otpExpiry = expiry;
@@ -24,7 +24,7 @@ export async function POST(req: Request) {
     // Send the email
     await resend.emails.send({
       from: 'Foundr Auth <onboarding@resend.dev>',
-      to: email, // In sandbox, use your verified email
+      to: email, 
       subject: `Your Login Code: ${otp}`,
       html: `<h2>Your Foundr Login Code is: <strong>${otp}</strong></h2><p>This code expires in 10 minutes.</p>`
     });

@@ -3,7 +3,6 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 
-// We pass the whole project object in so the AI has context
 export default function AiCopilot({ project }: { project: any }) {
   const [analysis, setAnalysis] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -17,7 +16,7 @@ export default function AiCopilot({ project }: { project: any }) {
       const res = await fetch("/api/ai/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        // Send only the necessary data to save tokens
+        
         body: JSON.stringify({
           title: project.title,
           description: project.description,
@@ -65,14 +64,14 @@ export default function AiCopilot({ project }: { project: any }) {
         <div className="mt-6 p-6 bg-white border border-stone-200 rounded-xl shadow-sm prose prose-stone max-w-none">
           <ReactMarkdown
             components={{
-              // This customizes how the "stars" (bold text) look
+              
               strong: ({ node, ...props }) => (
                 <span
                   className="block text-sm font-black text-stone-900 uppercase tracking-wider mb-2 mt-4 first:mt-0"
                   {...props}
                 />
               ),
-              // This makes the bullet points look clean
+              
               li: ({ node, ...props }) => (
                 <li
                   className="text-sm text-stone-600 mb-3 ml-4 list-disc marker:text-amber-500"

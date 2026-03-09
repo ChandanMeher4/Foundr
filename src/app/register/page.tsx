@@ -59,9 +59,9 @@ export default function RegisterPage() {
 
       if (res.ok) {
         const data = await res.json();
-        // Send developers to their dashboard, and investors to the main map!
+        
         router.push(data.role === "Developer" ? "/developer" : "/");
-        router.refresh(); // Forces the navbar to update and show their name
+        router.refresh(); 
       } else {
         const data = await res.json();
         setError(data.error || "Registration failed");
