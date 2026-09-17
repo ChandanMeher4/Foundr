@@ -42,7 +42,7 @@ const ProjectSchema = new Schema(
     imageUrls: { type: [String], required: "true" },
     status: {
       type: String,
-      enum: ["Pending Review", "Live", "Rejected"],
+      enum: ["Pending Review", "Live", "Funded", "Rejected"],
       default: "Pending Review",
     },
   },

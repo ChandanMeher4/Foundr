@@ -53,10 +53,17 @@ export default async function ProjectDetailsPage({
             <ImageCarousel imageUrls={project.imageUrls} title={project.title} />
 
             <div>
-              {/* Category tag */}
-              <p className="text-[10px] font-bold text-amber-600 tracking-[0.35em] uppercase mb-3">
-                ◆ {project.category || "Real Estate"}
-              </p>
+              {/* Category & Status tag */}
+              <div className="flex items-center gap-3 mb-3">
+                <p className="text-[10px] font-bold text-amber-600 tracking-[0.35em] uppercase">
+                  ◆ {project.category || "Real Estate"}
+                </p>
+                {project.status === "Funded" && (
+                  <span className="bg-emerald-600 text-white text-[9px] font-black px-2.5 py-0.5 rounded-full tracking-widest uppercase">
+                    ✓ Fully Funded
+                  </span>
+                )}
+              </div>
 
               <h1
                 className="text-4xl font-black text-stone-900 mb-3 leading-tight tracking-tight"
@@ -169,6 +176,7 @@ export default async function ProjectDetailsPage({
                   <InvestButton
                     projectId={project._id.toString()}
                     minInvestment={project.minInvestment}
+                    isFunded={project.status === "Funded" || (project.currentFunding || 0) >= project.totalValuation}
                   />
                   <p className="text-[10px] text-center text-stone-400 mt-3 leading-relaxed">
                     Committing sends an inquiry to the developer.

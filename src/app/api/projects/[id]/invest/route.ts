@@ -49,6 +49,13 @@ export async function POST(
     // 2. Fetch the investor's details 
     const investor = await User.findById(investorId);
 
+    if (project.status === "Funded" || project.currentFunding >= project.totalValuation) {
+      return NextResponse.json(
+        { error: "This opportunity is already fully funded." },
+        { status: 400 },
+      );
+    }
+
     if (amount < project.minInvestment) {
       return NextResponse.json(
         {
@@ -58,12 +65,16 @@ export async function POST(
       );
     }
 
-    // 3. Increment the funding and push the investor into the array
+    const newFunding = (project.currentFunding || 0) + amount;
+    const isGoalReached = newFunding >= project.totalValuation;
+
+    // 3. Increment the funding, record the investor, and auto-transition status if target reached
     const updatedProject = await Project.findByIdAndUpdate(
       projectId,
       {
         $inc: { currentFunding: amount },
         $push: { investors: { userId: investorId, amount: amount } },
+        ...(isGoalReached ? { status: "Funded" } : {}),
       },
       { new: true },
     );

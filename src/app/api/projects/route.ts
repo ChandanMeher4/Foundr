@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import dbConnect from "@/lib/db";
 import Project from "@/models/Project";
+import "@/models/User";
 import { cookies } from 'next/headers';
 import { jwtVerify } from 'jose';
 
@@ -8,15 +9,17 @@ export async function GET() {
   try {
     await dbConnect();
 
-    //fetch projects that are approved and live
-    const projects = await Project.find({ status: "Live" })
+    // fetch projects that are approved (Live or Fully Funded)
+    const projects = await Project.find({ status: { $in: ["Live", "Funded"] } })
       .populate("developerName", "name")
+      .sort({ createdAt: -1 })
       .lean();
 
     return NextResponse.json(projects);
-  } catch (error) {
+  } catch (error: any) {
+    console.error("Fetch Marketplace Data Error:", error);
     return NextResponse.json(
-      { error: "Failed to fetch marketplace data" },
+      { error: "Failed to fetch marketplace data", details: error.message },
       { status: 500 },
     );
   }

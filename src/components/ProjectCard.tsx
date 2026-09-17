@@ -23,11 +23,20 @@ export default function ProjectCard({ project }: { project: IProject }) {
         {/* Dark gradient overlay */}
         <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent" />
 
-        {/* Stage Badge */}
-        <div className="absolute top-4 left-4 bg-stone-900/85 backdrop-blur-sm px-3 py-1 rounded-full">
-          <span className="text-[10px] font-bold text-amber-400 tracking-widest uppercase">
-            {project.constructionStage}
-          </span>
+        {/* Stage & Status Badges */}
+        <div className="absolute top-4 left-4 flex items-center gap-2">
+          <div className="bg-stone-900/85 backdrop-blur-sm px-3 py-1 rounded-full">
+            <span className="text-[10px] font-bold text-amber-400 tracking-widest uppercase">
+              {project.constructionStage}
+            </span>
+          </div>
+          {project.status === "Funded" && (
+            <div className="bg-emerald-600 text-white px-2.5 py-1 rounded-full shadow-md">
+              <span className="text-[10px] font-black tracking-widest uppercase">
+                ✓ Funded
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Verified Badge */}

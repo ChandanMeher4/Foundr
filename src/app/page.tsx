@@ -213,11 +213,20 @@ export default function Marketplace() {
                       {/* Dark gradient overlay */}
                       <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent" />
 
-                      {/* Category Badge */}
-                      <div className="absolute top-4 left-4 bg-stone-900/90 backdrop-blur-sm px-3 py-1 rounded-full">
-                        <span className="text-[10px] font-bold text-amber-400 tracking-widest uppercase">
-                          {project.category}
-                        </span>
+                      {/* Category Badge & Status */}
+                      <div className="absolute top-4 left-4 flex items-center gap-2">
+                        <div className="bg-stone-900/90 backdrop-blur-sm px-3 py-1 rounded-full">
+                          <span className="text-[10px] font-bold text-amber-400 tracking-widest uppercase">
+                            {project.category}
+                          </span>
+                        </div>
+                        {project.status === "Funded" && (
+                          <div className="bg-emerald-600 text-white px-2.5 py-1 rounded-full shadow-md flex items-center gap-1">
+                            <span className="text-[10px] font-black tracking-widest uppercase">
+                              ✓ Funded
+                            </span>
+                          </div>
+                        )}
                       </div>
 
                       {/* Progress badge on image */}

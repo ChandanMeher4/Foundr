@@ -66,8 +66,9 @@ export default function AdminDashboard() {
     );
   }
 
-  const pending = projects.filter((p: any) => p.status !== "Live").length;
+  const pending = projects.filter((p: any) => p.status === "Pending Review").length;
   const live = projects.filter((p: any) => p.status === "Live").length;
+  const funded = projects.filter((p: any) => p.status === "Funded").length;
 
   return (
     <div className="min-h-screen bg-stone-50">
@@ -92,8 +93,11 @@ export default function AdminDashboard() {
               <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-full">
                 {pending} Pending
               </span>
-              <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-full">
+              <span className="text-[10px] font-bold text-blue-700 bg-blue-50 border border-blue-200 px-3 py-1.5 rounded-full">
                 {live} Live
+              </span>
+              <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-full">
+                {funded} Funded
               </span>
             </div>
             <Link
@@ -176,8 +180,10 @@ export default function AdminDashboard() {
                         {project.title}
                       </h2>
                       <span className={`shrink-0 text-[10px] font-bold px-3 py-1 rounded-full border tracking-wider uppercase ${
-                        project.status === "Live"
-                          ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                        project.status === "Funded"
+                          ? "bg-emerald-600 text-white border-emerald-600 font-black"
+                          : project.status === "Live"
+                          ? "bg-blue-50 text-blue-700 border-blue-200"
                           : "bg-amber-50 text-amber-700 border-amber-200"
                       }`}>
                         {project.status}
@@ -223,7 +229,7 @@ export default function AdminDashboard() {
 
                     {/* Admin Actions */}
                     <div className="flex gap-3 flex-wrap">
-                      {project.status !== "Live" && (
+                      {project.status === "Pending Review" && (
                         <button
                           onClick={() => handleApprove(project._id)}
                           className="inline-flex items-center gap-2 bg-stone-900 hover:bg-emerald-500 text-white font-bold px-5 py-2.5 rounded-xl text-xs tracking-widest uppercase transition-all duration-200 shadow-sm group"

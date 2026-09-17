@@ -98,7 +98,13 @@ export default async function DeveloperDashboard() {
                   className="bg-white rounded-2xl border border-stone-200 shadow-sm hover:shadow-lg transition-all duration-200 overflow-hidden"
                 >
                   {/* Status accent bar */}
-                  <div className={`h-1 w-full ${project.status === "Live" ? "bg-gradient-to-r from-emerald-400 to-emerald-500" : "bg-gradient-to-r from-amber-400 to-amber-500"}`} />
+                  <div className={`h-1 w-full ${
+                    project.status === "Funded"
+                      ? "bg-gradient-to-r from-emerald-500 to-teal-400"
+                      : project.status === "Live"
+                      ? "bg-gradient-to-r from-emerald-400 to-emerald-500"
+                      : "bg-gradient-to-r from-amber-400 to-amber-500"
+                  }`} />
 
                   <div className="p-6 flex flex-col md:flex-row gap-6">
                     {/* Cover image */}
@@ -121,7 +127,9 @@ export default async function DeveloperDashboard() {
                           {project.title}
                         </h2>
                         <span className={`shrink-0 text-[10px] font-bold px-3 py-1 rounded-full border tracking-wider uppercase ${
-                          project.status === "Live"
+                          project.status === "Funded"
+                            ? "bg-emerald-600 text-white border-emerald-600 font-black"
+                            : project.status === "Live"
                             ? "bg-emerald-50 text-emerald-700 border-emerald-200"
                             : "bg-amber-50 text-amber-700 border-amber-200"
                         }`}>
