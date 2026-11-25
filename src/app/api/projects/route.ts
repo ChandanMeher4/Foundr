@@ -2,24 +2,23 @@ import { NextResponse } from "next/server";
 import dbConnect from "@/lib/db";
 import Project from "@/models/Project";
 import "@/models/User";
-import { cookies } from 'next/headers';
-import { jwtVerify } from 'jose';
+import { requireRole } from "@/lib/auth";
 
 export async function GET() {
   try {
     await dbConnect();
 
-    // fetch projects that are approved (Live or Fully Funded)
     const projects = await Project.find({ status: { $in: ["Live", "Funded"] } })
       .populate("developerName", "name")
       .sort({ createdAt: -1 })
       .lean();
 
     return NextResponse.json(projects);
-  } catch (error: any) {
-    console.error("Fetch Marketplace Data Error:", error);
+  } catch (error: unknown) {
+    const details = error instanceof Error ? error.message : "Unknown error";
+    console.error("Fetch Marketplace Data Error:", details);
     return NextResponse.json(
-      { error: "Failed to fetch marketplace data", details: error.message },
+      { error: "Failed to fetch marketplace data", details },
       { status: 500 },
     );
   }
@@ -27,55 +26,64 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
-    const cookieStore = await cookies();
-    const token = cookieStore.get("foundr_token")?.value;
+    const auth = await requireRole(["Developer", "Admin"]);
+    if (auth.response) return auth.response;
 
-    if (!token) {
+    const body = await req.json();
+    const totalValuation = Number(body.totalValuation);
+    const minInvestment = Number(body.minInvestment);
+    const coords = body.location?.coordinates;
+    const address = typeof body.location?.address === "string" ? body.location.address.trim() : "";
+    const imageUrls = Array.isArray(body.imageUrls)
+      ? body.imageUrls.filter((u: unknown) => typeof u === "string" && u.trim().length > 0)
+      : [];
+
+    if (
+      !body.title ||
+      !body.description ||
+      !address ||
+      !Array.isArray(coords) ||
+      coords.length !== 2 ||
+      !Number.isFinite(totalValuation) ||
+      totalValuation <= 0 ||
+      !Number.isFinite(minInvestment) ||
+      minInvestment <= 0 ||
+      minInvestment > totalValuation ||
+      imageUrls.length === 0
+    ) {
       return NextResponse.json(
-        { error: "Unauthorized. Please log in." },
-        { status: 401 },
+        { error: "Invalid project details. Check valuation, minimum investment, location, and images." },
+        { status: 400 },
       );
     }
 
-    const SECRET = new TextEncoder().encode(
-      process.env.JWT_SECRET || "fallback_secret",
-    );
-    const { payload } = await jwtVerify(token, SECRET);
-
-    // Parse the incoming form data
-    const body = await req.json();
-
     await dbConnect();
 
-    // Mold the data into the Mongoose Schema format
     const newProject = await Project.create({
-      title: body.title,
-      description: body.description,
-      developerName: payload.id, 
-
-      // Formatting for the 2dsphere index
+      title: String(body.title).trim(),
+      description: String(body.description).trim(),
+      developerName: auth.session.id,
       location: {
         type: "Point",
-        coordinates: body.location.coordinates, 
-        address: body.location.address,
+        coordinates: [Number(coords[0]), Number(coords[1])],
+        address,
       },
-
       category: body.category,
       constructionStage: body.constructionStage,
-      totalValuation: body.totalValuation,
-      minInvestment: body.minInvestment,
+      totalValuation,
+      minInvestment,
       expectedCompletion: body.expectedCompletion,
-
-      imageUrls: body.imageUrls,
-      status: "Pending Review", 
+      imageUrls,
+      status: "Pending Review",
     });
 
     return NextResponse.json(
       { message: "Project submitted successfully", project: newProject },
       { status: 201 },
     );
-  } catch (error: any) {
-    console.error("Submission Error:", error.message);
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : "Unknown error";
+    console.error("Submission Error:", msg);
     return NextResponse.json(
       { error: "Failed to submit project. Please check your data." },
       { status: 500 },

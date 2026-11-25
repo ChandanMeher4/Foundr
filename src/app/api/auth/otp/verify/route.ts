@@ -1,63 +1,57 @@
 import { NextResponse } from "next/server";
-import dbConnect from "@/lib/db"; 
+import dbConnect from "@/lib/db";
 import User from "@/models/User";
-import { SignJWT } from "jose"; 
-import { cookies } from "next/headers";
+import { signSessionToken, setSessionCookie, type UserRole } from "@/lib/auth";
 
 export async function POST(req: Request) {
   try {
     await dbConnect();
-    const { email, otp } = await req.json();
+    const body = await req.json();
+    const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+    const otp = typeof body.otp === "string" ? body.otp.trim() : "";
 
-    // 1. Find the user with the matching email and valid OTP
-    const user = await User.findOne({ 
-      email, 
-      otp, 
-      otpExpiry: { $gt: new Date() } 
+    if (!email || !otp) {
+      return NextResponse.json(
+        { error: "Email and OTP are required." },
+        { status: 400 },
+      );
+    }
+
+    const user = await User.findOne({
+      email,
+      otp,
+      otpExpiry: { $gt: new Date() },
     });
 
     if (!user) {
-      return NextResponse.json({ error: "Invalid or expired OTP." }, { status: 400 });
+      return NextResponse.json(
+        { error: "Invalid or expired OTP." },
+        { status: 400 },
+      );
     }
 
-    // 2. Clear OTP after successful use so a hacker can't reuse it
     user.otp = undefined;
     user.otpExpiry = undefined;
     await user.save();
 
-    // 3. Generate the Secure JWT Token
-    const SECRET = new TextEncoder().encode(process.env.JWT_SECRET || "fallback_secret");
-    
-    const token = await new SignJWT({ 
-      id: user._id.toString(), 
-      role: user.role, 
-      name: user.name 
-    })
-      .setProtectedHeader({ alg: "HS256" })
-      .setIssuedAt()
-      .setExpirationTime("7d") 
-      .sign(SECRET);
-
-    // 4. Set the HTTP-Only Cookie (This actually logs them in!)
-    const cookieStore = await cookies();
-    cookieStore.set("foundr_token", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
-      maxAge: 60 * 60 * 24 * 7, 
-      path: "/",
+    const token = await signSessionToken({
+      id: user._id.toString(),
+      role: user.role as UserRole,
+      name: user.name,
+      city: user.city,
     });
-    
-    return NextResponse.json(
-      { message: "Login successful!", role: user.role }, 
-      { status: 200 }
-    );
 
-  } catch (error: any) {
+    await setSessionCookie(token);
+
+    return NextResponse.json(
+      { message: "Login successful!", role: user.role },
+      { status: 200 },
+    );
+  } catch (error: unknown) {
     console.error("OTP Verification Error:", error);
     return NextResponse.json(
-      { error: "An unexpected error occurred during verification." }, 
-      { status: 500 }
+      { error: "An unexpected error occurred during verification." },
+      { status: 500 },
     );
   }
 }

@@ -19,7 +19,7 @@ export default function ListProjectPage() {
     totalValuation: "",
     minInvestment: "",
     expectedCompletion: "",
-    imageUrl: [] as string[],
+    imageUrls: [] as string[],
   });
 
   const handleChange = (
@@ -44,11 +44,14 @@ export default function ListProjectPage() {
           method: "POST", body: data,
         });
         const uploadedImage = await res.json();
-        return uploadedImage.secure_url;
+        if (!res.ok || !uploadedImage.secure_url) {
+          throw new Error("Image upload failed");
+        }
+        return uploadedImage.secure_url as string;
       });
       const uploadedUrls = await Promise.all(uploadPromises);
-      setFormData((prev) => ({ ...prev, imageUrls: [...prev.imageUrl, ...uploadedUrls] }));
-    } catch (err) {
+      setFormData((prev) => ({ ...prev, imageUrls: [...prev.imageUrls, ...uploadedUrls] }));
+    } catch {
       setError("Failed to upload one or more images.");
     } finally {
       setIsUploadingImage(false);
@@ -57,7 +60,18 @@ export default function ListProjectPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.imageUrl) { setError("Please upload a project image before submitting."); return; }
+    if (!formData.location.address) {
+      setError("Please select a valid location from the address suggestions.");
+      return;
+    }
+    if (formData.imageUrls.length === 0) {
+      setError("Please upload at least one project image before submitting.");
+      return;
+    }
+    if (Number(formData.minInvestment) > Number(formData.totalValuation)) {
+      setError("Minimum investment cannot exceed total valuation.");
+      return;
+    }
     setIsSubmitting(true);
     setError("");
     try {
@@ -70,10 +84,13 @@ export default function ListProjectPage() {
           minInvestment: Number(formData.minInvestment),
         }),
       });
-      if (!response.ok) throw new Error("Failed to submit project");
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to submit project");
+      }
       router.push("/?success=true");
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to submit project");
     } finally {
       setIsSubmitting(false);
     }
@@ -171,9 +188,9 @@ export default function ListProjectPage() {
                 </label>
               </div>
 
-              {formData.imageUrl.length > 0 && (
+              {formData.imageUrls.length > 0 && (
                 <div className="mt-3 grid grid-cols-4 gap-3">
-                  {formData.imageUrl.map((url, index) => (
+                  {formData.imageUrls.map((url, index) => (
                     <div key={index} className="relative h-20 rounded-xl overflow-hidden border border-stone-200 shadow-sm">
                       <img src={url} alt={`Preview ${index + 1}`} className="w-full h-full object-cover" />
                       {index === 0 && (

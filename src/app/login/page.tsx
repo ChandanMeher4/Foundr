@@ -28,7 +28,8 @@ export default function LoginPage() {
       });
       if (res.ok) {
         const data = await res.json();
-        router.push(data.role === "Admin" ? "/admin" : data.role === "Developer" ? "/developer" : "/");
+        const role = data.user?.role ?? data.role;
+        router.push(role === "Admin" ? "/admin" : role === "Developer" ? "/developer" : "/");
         router.refresh();
       } else {
         const data = await res.json();
@@ -80,7 +81,8 @@ export default function LoginPage() {
       });
       if (res.ok) {
         const data = await res.json();
-        router.push(data.role === "Admin" ? "/admin" : data.role === "Developer" ? "/developer" : "/");
+        const role = data.user?.role ?? data.role;
+        router.push(role === "Admin" ? "/admin" : role === "Developer" ? "/developer" : "/");
         router.refresh();
       } else {
         const data = await res.json();

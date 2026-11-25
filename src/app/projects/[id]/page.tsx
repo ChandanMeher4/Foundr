@@ -4,7 +4,7 @@ import Project from "@/models/Project";
 import Link from "next/link";
 import StarButton from "@/components/StarButton";
 import ImageCarousel from "@/components/ImageCarousel";
-import InvestButton from "@/components/InvestButton";
+import LiveFundingProgress from "@/components/LiveFundingProgress";
 import AiCopilot from "@/components/AiCopilot";
 import "@/models/User";
 
@@ -26,10 +26,6 @@ export default async function ProjectDetailsPage({
   }
 
   const devName = project.developerName?.name || "Verified Developer";
-  const fundingPercentage = Math.min(
-    (project.currentFunding / project.totalValuation) * 100,
-    100,
-  ).toFixed(0);
 
   return (
     <div className="min-h-screen bg-stone-50">
@@ -155,34 +151,14 @@ export default async function ProjectDetailsPage({
                   </div>
                 </div>
 
-                {/* Funding Progress */}
-                <div className="pb-5 border-b border-stone-100">
-                  <div className="flex justify-between text-[11px] font-bold mb-2">
-                    <span className="text-amber-600">{fundingPercentage}% Funded</span>
-                    <span className="text-stone-400">
-                      ₹{project.currentFunding.toLocaleString("en-IN")} raised
-                    </span>
-                  </div>
-                  <div className="w-full bg-stone-100 rounded-full h-1.5 overflow-hidden">
-                    <div
-                      className="bg-gradient-to-r from-amber-500 to-amber-400 h-1.5 rounded-full transition-all duration-1000 ease-out"
-                      style={{ width: `${fundingPercentage}%` }}
-                    />
-                  </div>
-                </div>
-
-                {/* CTA */}
-                <div>
-                  <InvestButton
-                    projectId={project._id.toString()}
-                    minInvestment={project.minInvestment}
-                    isFunded={project.status === "Funded" || (project.currentFunding || 0) >= project.totalValuation}
-                  />
-                  <p className="text-[10px] text-center text-stone-400 mt-3 leading-relaxed">
-                    Committing sends an inquiry to the developer.
-                    No money is transferred yet.
-                  </p>
-                </div>
+                {/* Funding Progress & Live SSE CTA */}
+                <LiveFundingProgress
+                  projectId={project._id.toString()}
+                  initialFunding={project.currentFunding || 0}
+                  totalValuation={project.totalValuation}
+                  minInvestment={project.minInvestment}
+                  initialStatus={project.status}
+                />
 
               </div>
             </div>

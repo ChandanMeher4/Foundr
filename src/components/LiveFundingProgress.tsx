@@ -1,0 +1,103 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import InvestButton from "./InvestButton";
+
+interface FundingStreamPayload {
+  projectId: string;
+  currentFunding: number;
+  totalValuation: number;
+  status: string;
+  percentage: number;
+}
+
+export default function LiveFundingProgress({
+  projectId,
+  initialFunding,
+  totalValuation,
+  minInvestment,
+  initialStatus,
+}: {
+  projectId: string;
+  initialFunding: number;
+  totalValuation: number;
+  minInvestment: number;
+  initialStatus: string;
+}) {
+  const router = useRouter();
+  const [currentFunding, setCurrentFunding] = useState(initialFunding);
+  const [status, setStatus] = useState(initialStatus);
+
+  const workerBaseUrl =
+    process.env.NEXT_PUBLIC_WORKER_URL ||
+    (typeof window !== "undefined" && window.location.hostname === "localhost"
+      ? "http://localhost:4000"
+      : "");
+
+  useEffect(() => {
+    if (!workerBaseUrl) return;
+
+    const es = new EventSource(`${workerBaseUrl}/projects/${projectId}/stream`);
+
+    const onFunding = (event: MessageEvent<string>) => {
+      try {
+        const data = JSON.parse(event.data) as FundingStreamPayload;
+        if (typeof data.currentFunding === "number") {
+          setCurrentFunding(data.currentFunding);
+        }
+        if (typeof data.status === "string") {
+          setStatus(data.status);
+          if (data.status === "Funded") {
+            router.refresh();
+          }
+        }
+      } catch {
+        // Ignore malformed frames
+      }
+    };
+
+    es.addEventListener("funding", onFunding);
+    return () => {
+      es.removeEventListener("funding", onFunding);
+      es.close();
+    };
+  }, [projectId, workerBaseUrl, router]);
+
+  const fundingPercentage = Math.min(
+    (currentFunding / totalValuation) * 100,
+    100,
+  ).toFixed(0);
+  const isFunded = status === "Funded" || currentFunding >= totalValuation;
+
+  return (
+    <>
+      <div className="pb-5 border-b border-stone-100">
+        <div className="flex justify-between text-[11px] font-bold mb-2">
+          <span className="text-amber-600">{fundingPercentage}% Funded</span>
+          <span className="text-stone-400">
+            ₹{currentFunding.toLocaleString("en-IN")} raised
+          </span>
+        </div>
+        <div className="w-full bg-stone-100 rounded-full h-1.5 overflow-hidden">
+          <div
+            className="bg-gradient-to-r from-amber-500 to-amber-400 h-1.5 rounded-full transition-all duration-700 ease-out"
+            style={{ width: `${fundingPercentage}%` }}
+          />
+        </div>
+      </div>
+
+      <div>
+        <InvestButton
+          projectId={projectId}
+          minInvestment={minInvestment}
+          isFunded={isFunded}
+        />
+        <p className="text-[10px] text-center text-stone-400 mt-3 leading-relaxed">
+          Committing sends an inquiry to the developer.
+          No money is transferred yet.
+        </p>
+      </div>
+    </>
+  );
+}

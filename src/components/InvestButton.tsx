@@ -15,9 +15,26 @@ export default function InvestButton({
   const router = useRouter();
   const [isOpen, setIsOpen] = useState(false);
   const [amount, setAmount] = useState<number | "">("");
+  const [idempotencyKey, setIdempotencyKey] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState(false);
+
+  const openModal = () => {
+    setError("");
+    setSuccess(false);
+    setIdempotencyKey(crypto.randomUUID());
+    setIsOpen(true);
+  };
+
+  const handleAmountChange = (val: string) => {
+    const next = Number(val) || "";
+    if (next !== amount) {
+      // Regenerate key if amount changes so intentional edits aren't blocked by 422
+      setIdempotencyKey(crypto.randomUUID());
+    }
+    setAmount(next);
+  };
 
   const handleInvest = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -30,17 +47,25 @@ export default function InvestButton({
     try {
       const res = await fetch(`/api/projects/${projectId}/invest`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": idempotencyKey || crypto.randomUUID(),
+        },
         body: JSON.stringify({ amount: Number(amount) }),
       });
-      if (!res.ok) throw new Error("Failed to process investment");
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to process investment");
+      }
       setSuccess(true);
       setTimeout(() => {
         setIsOpen(false);
         router.refresh();
       }, 2000);
-    } catch (err) {
-      setError("Something went wrong. Please try again.");
+    } catch (err: unknown) {
+      setError(
+        err instanceof Error ? err.message : "Something went wrong. Please try again.",
+      );
     } finally {
       setIsSubmitting(false);
     }
@@ -63,7 +88,7 @@ export default function InvestButton({
   return (
     <>
       <button
-        onClick={() => setIsOpen(true)}
+        onClick={openModal}
         className="w-full bg-stone-900 hover:bg-amber-400 text-white hover:text-stone-900 font-bold py-4 rounded-xl transition-all duration-200 shadow-md text-xs tracking-widest uppercase flex items-center justify-center gap-2 group"
       >
         Commit to Invest
@@ -72,17 +97,14 @@ export default function InvestButton({
         </svg>
       </button>
 
-      {/* Modal */}
       {isOpen && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl overflow-hidden max-w-md w-full shadow-2xl">
-
-            {/* Modal header band */}
             <div className="bg-stone-950 px-7 py-6 relative">
               <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-transparent via-amber-400 to-transparent" />
               {!success && (
                 <button
-                title="back"
+                  title="back"
                   onClick={() => setIsOpen(false)}
                   className="absolute top-4 right-4 w-7 h-7 rounded-full bg-stone-800 hover:bg-stone-700 text-stone-400 hover:text-white flex items-center justify-center transition-colors"
                 >
@@ -137,7 +159,7 @@ export default function InvestButton({
                           type="number"
                           required
                           value={amount}
-                          onChange={(e) => setAmount(Number(e.target.value) || "")}
+                          onChange={(e) => handleAmountChange(e.target.value)}
                           className="w-full bg-stone-50 border border-stone-200 rounded-xl pl-8 pr-4 py-3 text-lg font-black text-stone-900 placeholder:text-stone-300 outline-none focus:ring-2 focus:ring-amber-400 focus:border-amber-400 transition-all"
                           placeholder={minInvestment.toString()}
                         />

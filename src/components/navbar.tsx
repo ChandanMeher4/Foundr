@@ -1,27 +1,9 @@
 import Link from "next/link";
-import { cookies } from "next/headers";
-import { jwtVerify } from "jose";
 import LogoutButton from "./LogoutButton";
+import { getSession } from "@/lib/auth";
 
 export default async function Navbar() {
-
-  const cookieStore = await cookies();
-  const token = cookieStore.get("foundr_token")?.value;
-
-  let user: { name?: string; role?: string; id?: string } | null = null;
-
-  
-  if (token) {
-    try {
-      const SECRET = new TextEncoder().encode(
-        process.env.JWT_SECRET || "fallback_secret",
-      );
-      const { payload } = await jwtVerify(token, SECRET);
-      user = payload as { name?: string; role?: string; id?: string };
-    } catch (err) {
-      console.error("Invalid token in Navbar");
-    }
-  }
+  const user = await getSession();
 
   return (
     <nav className="bg-stone-950 border-b border-stone-800 sticky top-0 z-40">

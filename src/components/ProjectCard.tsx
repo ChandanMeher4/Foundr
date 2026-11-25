@@ -7,7 +7,10 @@ export default function ProjectCard({ project }: { project: IProject }) {
     100,
   ).toFixed(0);
 
-  const devName = project.developerName?.name || "Verified Developer";
+  const devName =
+    typeof project.developerName === "object" && project.developerName !== null
+      ? project.developerName.name
+      : "Verified Developer";
 
   return (
     <div className="bg-white border border-stone-200 rounded-2xl overflow-hidden shadow-sm hover:shadow-2xl hover:-translate-y-1 transition-all duration-300 flex flex-col group">

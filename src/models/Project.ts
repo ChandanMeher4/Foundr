@@ -6,7 +6,7 @@ const ProjectSchema = new Schema(
     description: { type: String, required: true },
     developerName: { type: Schema.Types.ObjectId, ref: "User", required: true },
 
-    //GeoJSON Location Object
+    // GeoJSON Location Object
     location: {
       type: { type: String, enum: ["Point"], default: "Point", required: true },
       coordinates: { type: [Number], required: true }, // [longitude, latitude]
@@ -39,7 +39,8 @@ const ProjectSchema = new Schema(
     ],
     roi: { type: Number, default: 0 },
 
-    imageUrls: { type: [String], required: "true" },
+    imageUrls: { type: [String], required: true },
+    isVerified: { type: Boolean, default: false },
     status: {
       type: String,
       enum: ["Pending Review", "Live", "Funded", "Rejected"],

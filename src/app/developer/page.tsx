@@ -1,24 +1,13 @@
-import { cookies } from "next/headers";
-import { jwtVerify } from "jose";
 import { redirect } from "next/navigation";
 import dbConnect from "@/lib/db";
 import Project from "@/models/Project";
 import "@/models/User";
 import Link from "next/link";
+import { getSession } from "@/lib/auth";
 
 export default async function DeveloperDashboard() {
-  const cookieStore = await cookies();
-  const token = cookieStore.get("foundr_token")?.value;
-  if (!token) redirect("/login");
-
-  const SECRET = new TextEncoder().encode(process.env.JWT_SECRET || "fallback_secret");
-  let payload;
-  try {
-    const verified = await jwtVerify(token, SECRET);
-    payload = verified.payload;
-  } catch (err) {
-    redirect("/login");
-  }
+  const payload = await getSession();
+  if (!payload) redirect("/login");
 
   if (payload.role !== "Developer") redirect("/");
 

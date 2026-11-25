@@ -37,8 +37,11 @@ export default function AdminDashboard() {
             p._id === id ? { ...p, status: "Live", isVerified: true } : p,
           ),
         );
+      } else {
+        const data = await res.json().catch(() => ({}));
+        alert(data.error || "Failed to approve project");
       }
-    } catch (error) {
+    } catch {
       alert("Failed to approve project");
     }
   };
@@ -50,9 +53,10 @@ export default function AdminDashboard() {
       if (res.ok) {
         setProjects((prev: any) => prev.filter((p: any) => p._id !== id));
       } else {
-        alert("Failed to delete project. Make sure your DELETE API route is set up!");
+        const data = await res.json().catch(() => ({}));
+        alert(data.error || "Failed to delete project");
       }
-    } catch (error) {
+    } catch {
       console.error("Failed to reject project");
     }
   };

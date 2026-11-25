@@ -1,37 +1,17 @@
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
-import { jwtVerify } from "jose";
 import dbConnect from "@/lib/db";
 import User from "@/models/User";
-import "@/models/Project"; 
+import "@/models/Project";
+import { requireRole } from "@/lib/auth";
 
-// securely get the user ID from the cookie
-async function getUserIdFromToken() {
-  const cookieStore = await cookies();
-  const token = cookieStore.get("foundr_token")?.value;
-  if (!token) return null;
-
-  try {
-    const SECRET = new TextEncoder().encode(process.env.JWT_SECRET || "fallback_secret");
-    const { payload } = await jwtVerify(token, SECRET);
-    return payload.id; 
-  } catch (error) {
-    return null;
-  }
-}
-
-// 1. GET: Fetch Profile & Starred Projects
 export async function GET() {
   try {
-    await dbConnect();
-    const userId = await getUserIdFromToken();
-    
-    if (!userId) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const auth = await requireRole();
+    if (auth.response) return auth.response;
 
-    // Find the user and populate the projects starred
-    const user = await User.findById(userId)
+    await dbConnect();
+
+    const user = await User.findById(auth.session.id)
       .populate("starredProjects")
       .lean();
 
@@ -40,41 +20,40 @@ export async function GET() {
     }
 
     return NextResponse.json({ user });
-  } catch (error: any) {
-    console.error("Profile GET Error:", error.message);
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : "Unknown error";
+    console.error("Profile GET Error:", msg);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
 
-// 2. PATCH: Update User Settings 
 export async function PATCH(req: Request) {
   try {
-    await dbConnect();
-    const userId = await getUserIdFromToken();
-    
-    if (!userId) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const auth = await requireRole();
+    if (auth.response) return auth.response;
 
-    const { city } = await req.json();
+    const body = await req.json();
+    const city = typeof body.city === "string" ? body.city.trim() : "";
 
     if (!city) {
       return NextResponse.json({ error: "City is required" }, { status: 400 });
     }
 
-    // Update the user's city in the database
+    await dbConnect();
+
     const updatedUser = await User.findByIdAndUpdate(
-      userId,
+      auth.session.id,
       { city },
-      { new: true } 
+      { new: true },
     ).lean();
 
-    return NextResponse.json({ 
-      message: "Profile updated successfully", 
-      user: updatedUser 
+    return NextResponse.json({
+      message: "Profile updated successfully",
+      user: updatedUser,
     });
-  } catch (error: any) {
-    console.error("Profile PATCH Error:", error.message);
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : "Unknown error";
+    console.error("Profile PATCH Error:", msg);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }

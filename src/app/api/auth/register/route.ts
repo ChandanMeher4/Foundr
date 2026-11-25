@@ -2,16 +2,40 @@ import { NextResponse } from "next/server";
 import dbConnect from "@/lib/db";
 import User from "@/models/User";
 import bcrypt from "bcryptjs";
-import { SignJWT } from "jose"; 
-import { cookies } from "next/headers"; 
+import { signSessionToken, setSessionCookie } from "@/lib/auth";
+
+const PUBLIC_ROLES = ["Investor", "Developer"] as const;
+type PublicRole = (typeof PUBLIC_ROLES)[number];
 
 export async function POST(req: Request) {
   try {
     await dbConnect();
 
-    const { name, email, password, role, city, companyName } = await req.json();
+    const body = await req.json();
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+    const password = typeof body.password === "string" ? body.password : "";
+    const city = typeof body.city === "string" && body.city.trim() ? body.city.trim() : "Bengaluru";
+    const companyName = typeof body.companyName === "string" ? body.companyName.trim() : "";
+    const requestedRole = body.role ?? "Investor";
 
-    const existingUser = await User.findOne({ email: email.toLowerCase() });
+    if (!name || !email || password.length < 8) {
+      return NextResponse.json(
+        { error: "Valid name, email, and password (min 8 chars) are required." },
+        { status: 400 },
+      );
+    }
+
+    if (!PUBLIC_ROLES.includes(requestedRole as PublicRole)) {
+      return NextResponse.json(
+        { error: "Invalid account type specified." },
+        { status: 400 },
+      );
+    }
+
+    const role = requestedRole as PublicRole;
+
+    const existingUser = await User.findOne({ email });
     if (existingUser) {
       return NextResponse.json(
         { error: "An account with this email already exists." },
@@ -24,41 +48,27 @@ export async function POST(req: Request) {
 
     const newUser = await User.create({
       name,
-      email: email.toLowerCase(),
+      email,
       password: hashedPassword,
       role,
       city,
       companyName: role === "Developer" ? companyName : undefined,
     });
 
-    const SECRET = new TextEncoder().encode(
-      process.env.JWT_SECRET || "fallback_secret",
-    );
-
-    const token = await new SignJWT({
+    const token = await signSessionToken({
       id: newUser._id.toString(),
-      role: newUser.role,
+      role,
       name: newUser.name,
-    })
-      .setProtectedHeader({ alg: "HS256" })
-      .setIssuedAt()
-      .setExpirationTime("7d")
-      .sign(SECRET);
-
-    const cookieStore = await cookies();
-    cookieStore.set("foundr_token", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
-      maxAge: 60 * 60 * 24 * 7, // 7 days
-      path: "/",
+      city: newUser.city,
     });
-    
+
+    await setSessionCookie(token);
+
     return NextResponse.json(
       { message: "Account created successfully!", role: newUser.role },
       { status: 201 },
     );
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Signup Error:", error);
     return NextResponse.json(
       { error: "Failed to create account. Please try again." },

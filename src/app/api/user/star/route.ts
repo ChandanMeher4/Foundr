@@ -1,56 +1,48 @@
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
-import { jwtVerify } from "jose";
+import mongoose from "mongoose";
 import dbConnect from "@/lib/db";
 import User from "@/models/User";
+import { requireRole } from "@/lib/auth";
 
 export async function POST(req: Request) {
   try {
-    // 1. Authenticate the User
-    const cookieStore = await cookies();
-    const token = cookieStore.get("foundr_token")?.value;
-    
-    if (!token) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const auth = await requireRole();
+    if (auth.response) return auth.response;
 
-    const SECRET = new TextEncoder().encode(process.env.JWT_SECRET || "fallback_secret");
-    const { payload } = await jwtVerify(token, SECRET);
-    const userId = payload.id;
-
-    // 2. Get the Project ID from the request body
     const { projectId } = await req.json();
-    if (!projectId) {
-      return NextResponse.json({ error: "Project ID is required" }, { status: 400 });
+    if (!projectId || !mongoose.Types.ObjectId.isValid(projectId)) {
+      return NextResponse.json(
+        { error: "Valid Project ID is required" },
+        { status: 400 },
+      );
     }
 
     await dbConnect();
-    const user = await User.findById(userId);
-    
+    const user = await User.findById(auth.session.id);
+
     if (!user) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
-    // 3. Toggle Logic: Check if the project is already starred
-    const isAlreadyStarred = user.starredProjects.includes(projectId);
+    const isAlreadyStarred = user.starredProjects.some(
+      (id: mongoose.Types.ObjectId) => id.toString() === projectId,
+    );
 
     if (isAlreadyStarred) {
-      
       user.starredProjects.pull(projectId);
     } else {
-      
       user.starredProjects.push(projectId);
     }
 
     await user.save();
 
-    return NextResponse.json({ 
-      isStarred: !isAlreadyStarred, 
-      message: !isAlreadyStarred ? "Added to Profile" : "Removed from Profile" 
+    return NextResponse.json({
+      isStarred: !isAlreadyStarred,
+      message: !isAlreadyStarred ? "Added to Profile" : "Removed from Profile",
     });
-
-  } catch (error: any) {
-    console.error("Starring Error:", error.message);
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : "Unknown error";
+    console.error("Starring Error:", msg);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }

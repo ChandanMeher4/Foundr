@@ -109,12 +109,17 @@ Create `.env.local`
 MONGODB_URI=your_mongodb_uri
 JWT_SECRET=your_secret
 GROQ_API_KEY=your_groq_key
+REDIS_URL=your_tcp_redis_url
+EMAIL_MODE=sandbox
 ```
 
-## 4 Run the development server
+## 4 Run the development servers
 
 ```bash
+npm run dev:all      # Starts Next.js (http://localhost:3000) and /worker (http://localhost:4000) together
+# Or run separately in two terminals:
 npm run dev
+npm run worker
 ```
 
 App will run on:
@@ -122,6 +127,16 @@ App will run on:
 ```
 http://localhost:3000
 ```
+
+---
+
+# 🛠 Engineering Highlights
+
+| Problem Solved | Technology & Pattern | Measured Result |
+| :--- | :--- | :--- |
+| **Fail-Fast JWT & RBAC Enforcement** (`KI-001`–`003`, `KI-016`) | Centralized `src/lib/auth-core.ts` + `src/lib/auth.ts` (`jose` HS256) with `requireRole()` route guards & startup secret validation | Eliminated `"fallback_secret"` across 10 files; blocked anonymous project approvals (`401`/`403`), non-Admin Bull Board access (`401`/`403`), and admin signup escalation (`400`) |
+| **Concurrent Overfunding Prevention & Idempotency** (`KI-004`, Phase 1) | MongoDB atomic conditional `findOneAndUpdate` (`$expr: currentFunding + amount <= totalValuation`) + Redis `Idempotency-Key` (`NX EX 30` -> `24h` replay cache) | Verified by `npm test` (`tests/concurrency.test.ts`, `2/2` passed in `2544ms`): `20` simultaneous commitments of ₹2,00,000 against a ₹10,00,000 target yielded `5` × `200`, `15` × `400`, exact `currentFunding === totalValuation`; `5` parallel duplicate keys yielded `1` DB write + `422` on amount mismatch |
+| **Async Investment Pipeline & Live SSE Stream** (Phase 1) | Separate persistent `/worker` Node service (`BullMQ` `FlowProducer` `investment-events` + Redis `psubscribe("funding:*")` SSE + Admin Bull Board at `/admin/queues`) | Decouples `notify-developer`, `confirm-investor`, `audit-log` (`AuditLog`), and `check-funded` -> `funded-fanout` (`5` retries, exponential backoff, `removeOnFail: false`); live smoke test verified `/health` (`200`, `noeviction`), SSE `event: funding` CORS stream, and shared `4`-connection budget (`1` web + `3` worker) |
 
 ---
 

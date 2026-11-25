@@ -124,8 +124,7 @@ export default function Marketplace() {
               <option value="All">All Categories</option>
               <option value="Residential">Residential</option>
               <option value="Commercial">Commercial</option>
-              <option value="Industrial">Industrial</option>
-              <option value="Mixed-Use">Mixed-Use</option>
+              <option value="Plot">Plot</option>
             </select>
             <svg
               className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400 pointer-events-none"
