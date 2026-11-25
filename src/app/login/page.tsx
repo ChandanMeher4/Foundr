@@ -6,6 +6,7 @@ import Link from "next/link";
 
 export default function LoginPage() {
   const router = useRouter();
+  const otpLoginEnabled = process.env.NEXT_PUBLIC_OTP_LOGIN_ENABLED === "true";
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -162,13 +163,15 @@ export default function LoginPage() {
                 <div>
                   <div className="flex justify-between items-center mb-1.5">
                     <label className={labelClass} style={{ marginBottom: 0 }}>Password</label>
-                    <button
-                      type="button"
-                      onClick={() => { setError(""); setView("request_otp"); }}
-                      className="text-[10px] font-bold text-amber-600 hover:text-amber-500 tracking-wide uppercase transition-colors"
-                    >
-                      Forgot Password?
-                    </button>
+                    {otpLoginEnabled && (
+                      <button
+                        type="button"
+                        onClick={() => { setError(""); setView("request_otp"); }}
+                        className="text-[10px] font-bold text-amber-600 hover:text-amber-500 tracking-wide uppercase transition-colors"
+                      >
+                        Forgot Password?
+                      </button>
+                    )}
                   </div>
                   <input
                     type="password" required placeholder="••••••••"
@@ -190,7 +193,7 @@ export default function LoginPage() {
             )}
 
             {/* ── VIEW 2: REQUEST OTP ── */}
-            {view === "request_otp" && (
+            {otpLoginEnabled && view === "request_otp" && (
               <form onSubmit={handleRequestOTP} className="space-y-5">
                 <div>
                   <label className={labelClass}>Email Address</label>
@@ -222,7 +225,7 @@ export default function LoginPage() {
             )}
 
             {/* ── VIEW 3: VERIFY OTP ── */}
-            {view === "verify_otp" && (
+            {otpLoginEnabled && view === "verify_otp" && (
               <form onSubmit={handleVerifyOTP} className="space-y-5">
                 <div>
                   <label className={labelClass}>6-Digit Code</label>

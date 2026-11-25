@@ -35,6 +35,7 @@ const ProjectSchema = new Schema(
         userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
         amount: { type: Number, required: true },
         date: { type: Date, default: Date.now },
+        idempotencyKey: { type: String },
       },
     ],
     roi: { type: Number, default: 0 },

@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import mongoose from "mongoose";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 let activeAuthToken = "";
@@ -37,7 +38,11 @@ describe("Investment Concurrency & Idempotency Integration", () => {
   let developerId = "";
 
   beforeAll(async () => {
-    await dbConnect();
+    const conn = await dbConnect();
+    const activeDbName = conn.connection.db?.databaseName || "";
+    console.log(`[Test DB] Connected to isolated database: ${activeDbName}`);
+    expect(activeDbName.endsWith("_test")).toBe(true);
+
     const suffix = crypto.randomBytes(6).toString("hex");
 
     const dev = await User.create({
@@ -70,19 +75,28 @@ describe("Investment Concurrency & Idempotency Integration", () => {
 
   afterAll(async () => {
     await dbConnect();
+    let deletedProjects = 0;
+    let deletedAudits = 0;
+    let deletedUsers = 0;
+
     if (createdProjectIds.length > 0) {
-      await AuditLog.deleteMany({ projectId: { $in: createdProjectIds } });
-      await Project.deleteMany({ _id: { $in: createdProjectIds } });
+      const auditRes = await AuditLog.deleteMany({
+        projectId: { $in: createdProjectIds },
+      });
+      deletedAudits = auditRes.deletedCount || 0;
+      const projRes = await Project.deleteMany({
+        _id: { $in: createdProjectIds },
+      });
+      deletedProjects = projRes.deletedCount || 0;
     }
     if (createdUserIds.length > 0) {
-      await User.deleteMany({ _id: { $in: createdUserIds } });
+      const userRes = await User.deleteMany({ _id: { $in: createdUserIds } });
+      deletedUsers = userRes.deletedCount || 0;
     }
 
+    let deletedRedisCount = 0;
     if (process.env.REDIS_URL) {
       const redis = getRedisConnection();
-      if (createdRedisKeys.length > 0) {
-        await redis.del(...createdRedisKeys);
-      }
       const queue = getInvestmentQueue();
       for (const invId of createdInvestmentIds) {
         for (const prefix of [
@@ -98,8 +112,32 @@ describe("Investment Concurrency & Idempotency Integration", () => {
         }
       }
       await queue.close();
+
+      // Remove all test:* Redis keys (idempotency locks + BullMQ test prefix)
+      const allTestKeys = new Set<string>(createdRedisKeys);
+      let cursor = "0";
+      do {
+        const [nextCursor, batch] = await redis.scan(
+          cursor,
+          "MATCH",
+          "test:*",
+          "COUNT",
+          100,
+        );
+        cursor = nextCursor;
+        for (const k of batch) allTestKeys.add(k);
+      } while (cursor !== "0");
+
+      if (allTestKeys.size > 0) {
+        deletedRedisCount = await redis.del(...Array.from(allTestKeys));
+      }
       await redis.quit();
     }
+
+    await mongoose.disconnect();
+    console.log(
+      `[Test Cleanup] DB=${mongoose.connection.name || "foundr_test"} deletedUsers=${deletedUsers} deletedProjects=${deletedProjects} deletedAudits=${deletedAudits} deletedRedisKeys=${deletedRedisCount}`,
+    );
   });
 
   it("never exceeds totalValuation under 20 simultaneous investments", async () => {
@@ -132,7 +170,7 @@ describe("Investment Concurrency & Idempotency Integration", () => {
     const responses = await Promise.all(
       Array.from({ length: requestCount }, () => {
         const key = crypto.randomUUID();
-        createdRedisKeys.push(`idem:${investorId}:${key}`);
+        createdRedisKeys.push(`test:idem:${investorId}:${key}`);
 
         const req = new Request(
           `http://localhost:3000/api/projects/${projectId}/invest`,
@@ -199,7 +237,7 @@ describe("Investment Concurrency & Idempotency Integration", () => {
     createdProjectIds.push(projectId);
 
     const sharedKey = crypto.randomUUID();
-    createdRedisKeys.push(`idem:${investorId}:${sharedKey}`);
+    createdRedisKeys.push(`test:idem:${investorId}:${sharedKey}`);
 
     const parallelResponses = await Promise.all(
       Array.from({ length: 5 }, () => {
@@ -245,5 +283,83 @@ describe("Investment Concurrency & Idempotency Integration", () => {
       params: Promise.resolve({ id: projectId }),
     });
     expect(mismatchRes.status).toBe(422);
+  });
+
+  it("replays safely from MongoDB fallback when Redis key is deleted after commit (crash simulation)", async () => {
+    const project = await Project.create({
+      title: "Crash Recovery Tower",
+      description: "Automated crash-between-Mongo-and-Redis verification asset.",
+      developerName: developerId,
+      location: {
+        type: "Point",
+        coordinates: [77.5946, 12.9716],
+        address: "Indiranagar, Bengaluru",
+      },
+      category: "Commercial",
+      constructionStage: "Structural",
+      totalValuation: 1_000_000,
+      minInvestment: 100_000,
+      expectedCompletion: new Date("2028-09-01"),
+      currentFunding: 0,
+      imageUrls: ["https://placehold.co/600x400"],
+      isVerified: true,
+      status: "Live",
+    });
+
+    const projectId = project._id.toString();
+    createdProjectIds.push(projectId);
+
+    const crashKey = crypto.randomUUID();
+    const redisKey = `test:idem:${investorId}:${crashKey}`;
+    createdRedisKeys.push(redisKey);
+
+    const firstReq = new Request(
+      `http://localhost:3000/api/projects/${projectId}/invest`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": crashKey,
+        },
+        body: JSON.stringify({ amount: 250_000 }),
+      },
+    );
+
+    const firstRes = await investPost(firstReq, {
+      params: Promise.resolve({ id: projectId }),
+    });
+    expect(firstRes.status).toBe(200);
+    const firstBody = await firstRes.json();
+    expect(firstBody.investmentId).toBeTruthy();
+    createdInvestmentIds.push(firstBody.investmentId);
+
+    // Delete Redis cache key to simulate crash right after MongoDB commit
+    const redis = getRedisConnection();
+    await redis.del(redisKey);
+
+    const retryReq = new Request(
+      `http://localhost:3000/api/projects/${projectId}/invest`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": crashKey,
+        },
+        body: JSON.stringify({ amount: 250_000 }),
+      },
+    );
+
+    const retryRes = await investPost(retryReq, {
+      params: Promise.resolve({ id: projectId }),
+    });
+    expect(retryRes.status).toBe(200);
+    expect(retryRes.headers.get("X-Idempotent-Replay")).toBe("true");
+    const retryBody = await retryRes.json();
+    expect(retryBody.investmentId).toBe(firstBody.investmentId);
+
+    const freshProject = await Project.findById(projectId).lean();
+    expect(freshProject!.currentFunding).toBe(250_000);
+    expect(freshProject!.investors).toHaveLength(1);
+    expect(freshProject!.investors[0].idempotencyKey).toBe(crashKey);
   });
 });

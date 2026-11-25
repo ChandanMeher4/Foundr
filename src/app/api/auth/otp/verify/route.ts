@@ -4,6 +4,13 @@ import User from "@/models/User";
 import { signSessionToken, setSessionCookie, type UserRole } from "@/lib/auth";
 
 export async function POST(req: Request) {
+  if (process.env.OTP_LOGIN_ENABLED !== "true") {
+    return NextResponse.json(
+      { error: "OTP login is disabled" },
+      { status: 404 },
+    );
+  }
+
   try {
     await dbConnect();
     const body = await req.json();

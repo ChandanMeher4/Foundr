@@ -21,6 +21,7 @@ const AuditLogSchema = new Schema(
       index: true,
     },
     amount: { type: Number, required: true },
+    idempotencyKey: { type: String, index: true },
     ip: { type: String, default: "unknown" },
     metadata: { type: Schema.Types.Mixed, default: {} },
   },

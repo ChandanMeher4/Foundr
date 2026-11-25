@@ -1,6 +1,6 @@
 import { FlowProducer, Queue } from "bullmq";
 import type { ConnectionOptions } from "bullmq";
-import { getRedisConnection } from "./redis";
+import { getRedisConnection, getRedisKeyPrefix } from "./redis";
 
 export const INVESTMENT_EVENTS_QUEUE = "investment-events";
 
@@ -17,6 +17,7 @@ export interface InvestmentJobPayload {
   currentFunding: number;
   totalValuation: number;
   becameFunded: boolean;
+  idempotencyKey?: string;
   ip: string;
   createdAt: string;
 }
@@ -40,13 +41,20 @@ function bullConnection(): ConnectionOptions {
   return getRedisConnection() as unknown as ConnectionOptions;
 }
 
+function getBullPrefix(): string | undefined {
+  const keyPrefix = getRedisKeyPrefix();
+  return keyPrefix ? `${keyPrefix}bull` : undefined;
+}
+
 /** Returns singleton BullMQ Queue instance sharing the single global Redis connection. */
 export function getInvestmentQueue(): Queue {
   const g = globalThis as GlobalWithQueues;
   if (!g.__foundrInvestQueue) {
+    const prefix = getBullPrefix();
     g.__foundrInvestQueue = new Queue(INVESTMENT_EVENTS_QUEUE, {
       connection: bullConnection(),
       defaultJobOptions: DEFAULT_JOB_OPTS,
+      ...(prefix ? { prefix } : {}),
     });
   }
   return g.__foundrInvestQueue;
@@ -56,8 +64,10 @@ export function getInvestmentQueue(): Queue {
 export function getInvestmentFlowProducer(): FlowProducer {
   const g = globalThis as GlobalWithQueues;
   if (!g.__foundrFlowProducer) {
+    const prefix = getBullPrefix();
     g.__foundrFlowProducer = new FlowProducer({
       connection: bullConnection(),
+      ...(prefix ? { prefix } : {}),
     });
   }
   return g.__foundrFlowProducer;
@@ -73,11 +83,13 @@ export async function enqueueInvestmentFlow(
 ): Promise<void> {
   const flowProducer = getInvestmentFlowProducer();
   const id = payload.investmentId;
+  const prefix = getBullPrefix();
 
   await flowProducer.add({
     name: "check-funded",
     queueName: INVESTMENT_EVENTS_QUEUE,
     data: payload,
+    ...(prefix ? { prefix } : {}),
     opts: {
       ...DEFAULT_JOB_OPTS,
       jobId: `check-funded_${id}`,
@@ -87,6 +99,7 @@ export async function enqueueInvestmentFlow(
         name: "notify-developer",
         queueName: INVESTMENT_EVENTS_QUEUE,
         data: payload,
+        ...(prefix ? { prefix } : {}),
         opts: {
           ...DEFAULT_JOB_OPTS,
           jobId: `notify-developer_${id}`,
@@ -96,6 +109,7 @@ export async function enqueueInvestmentFlow(
         name: "confirm-investor",
         queueName: INVESTMENT_EVENTS_QUEUE,
         data: payload,
+        ...(prefix ? { prefix } : {}),
         opts: {
           ...DEFAULT_JOB_OPTS,
           jobId: `confirm-investor_${id}`,
@@ -105,6 +119,7 @@ export async function enqueueInvestmentFlow(
         name: "audit-log",
         queueName: INVESTMENT_EVENTS_QUEUE,
         data: payload,
+        ...(prefix ? { prefix } : {}),
         opts: {
           ...DEFAULT_JOB_OPTS,
           jobId: `audit-log_${id}`,

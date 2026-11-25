@@ -8,7 +8,15 @@ import { createBullBoard } from "@bull-board/api";
 import { BullMQAdapter } from "@bull-board/api/bullMQAdapter";
 import { ExpressAdapter } from "@bull-board/express";
 import { processInvestmentJob } from "./processors";
-import { AUTH_COOKIE_NAME, verifySessionToken } from "../src/lib/auth-core";
+import dbConnect from "../src/lib/db";
+import Project from "../src/models/Project";
+import {
+  BULLBOARD_COOKIE_NAME,
+  BullBoardAuthError,
+  signBullBoardSessionToken,
+  verifyBullBoardHandoffToken,
+  verifyBullBoardSessionToken,
+} from "../src/lib/auth-core";
 import { INVESTMENT_EVENTS_QUEUE } from "../src/lib/queue";
 
 const { redisUrl } = validateWorkerEnv();
@@ -72,30 +80,55 @@ async function verifyEvictionPolicy(redis: Redis): Promise<string | null> {
   return policy;
 }
 
-async function requireAdminMiddleware(
+async function getConnectedClients(redis: Redis): Promise<number | null> {
+  try {
+    const info = await redis.info("clients");
+    const match = info.match(/^connected_clients:(\d+)/m);
+    const infoCount = match?.[1] ? Number(match[1]) : null;
+    // Redis Cloud multi-tenant proxy reports connected_clients:0 in INFO clients; fall back to CLIENT LIST
+    if (infoCount !== null && infoCount > 0) {
+      return infoCount;
+    }
+    try {
+      const clientList = (await redis.client("LIST")) as string;
+      if (typeof clientList === "string" && clientList.trim().length > 0) {
+        return clientList.trim().split(/\r?\n/).filter(Boolean).length;
+      }
+    } catch {
+      // Preserve infoCount if CLIENT LIST is disabled on the host
+    }
+    return infoCount;
+  } catch (err) {
+    console.warn(
+      "[Redis WARNING] Could not query INFO clients:",
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  }
+}
+
+async function requireBullBoardSessionMiddleware(
   req: Request,
   res: Response,
   next: NextFunction,
 ): Promise<void> {
-  const bearer = req.headers.authorization?.startsWith("Bearer ")
-    ? req.headers.authorization.slice(7).trim()
-    : undefined;
-  const token = req.cookies?.[AUTH_COOKIE_NAME] || bearer;
+  // Accept ONLY the worker-scoped bullboard_session cookie; reject main login foundr_token
+  const token = req.cookies?.[BULLBOARD_COOKIE_NAME];
 
-  if (!token) {
-    res.status(401).json({ error: "Unauthorized. Admin session required." });
+  if (!token || typeof token !== "string") {
+    res.status(401).json({ error: "Unauthorized. Bull Board session required." });
     return;
   }
 
   try {
-    const session = await verifySessionToken(token);
-    if (session.role !== "Admin") {
-      res.status(403).json({ error: "Forbidden. Admin role required." });
+    await verifyBullBoardSessionToken(token);
+    next();
+  } catch (err) {
+    if (err instanceof BullBoardAuthError) {
+      res.status(err.status).json({ error: err.message });
       return;
     }
-    next();
-  } catch {
-    res.status(401).json({ error: "Invalid or expired session token." });
+    res.status(401).json({ error: "Invalid or expired Bull Board session." });
   }
 }
 
@@ -109,6 +142,8 @@ async function main() {
   const subRedis = createRedis("sub");
 
   const evictionPolicy = await verifyEvictionPolicy(commandRedis);
+  const initialClients = await getConnectedClients(commandRedis);
+  console.log(`[Redis] Connected clients: ${initialClients ?? "unknown"}`);
 
   const investmentQueue = new Queue(INVESTMENT_EVENTS_QUEUE, {
     connection: commandRedis as unknown as ConnectionOptions,
@@ -163,10 +198,12 @@ async function main() {
         ),
       ]);
       if (pong !== "PONG") throw new Error(`Unexpected ping response: ${pong}`);
+      const connectedClients = await getConnectedClients(commandRedis);
       res.status(200).json({
         status: "ok",
         redis: "connected",
         evictionPolicy: evictionPolicy ?? "unknown",
+        connected_clients: connectedClients,
         uptimeSeconds: Math.round(process.uptime()),
       });
     } catch (err) {
@@ -179,7 +216,7 @@ async function main() {
   });
 
   // Public SSE stream for live project funding progress (no cookie auth required)
-  app.get("/projects/:id/stream", (req, res) => {
+  app.get("/projects/:id/stream", async (req, res) => {
     const projectId = req.params.id;
     if (!/^[a-fA-F0-9]{24}$/.test(projectId)) {
       res.status(400).json({ error: "Invalid project ID" });
@@ -202,8 +239,10 @@ async function main() {
     set.add(res);
 
     const keepAlive = setInterval(() => {
-      res.write(": keepalive\n\n");
-    }, 25000);
+      if (!res.writableEnded) {
+        res.write(": ping\n\n");
+      }
+    }, 20000);
 
     req.on("close", () => {
       clearInterval(keepAlive);
@@ -216,16 +255,84 @@ async function main() {
       }
       res.end();
     });
+
+    // Push immediate current state so reconnecting clients never stay stale
+    try {
+      await dbConnect();
+      const project = await Project.findById(projectId)
+        .select("currentFunding totalValuation status")
+        .lean();
+      if (project && !req.destroyed && !res.writableEnded) {
+        const currentFunding = project.currentFunding || 0;
+        const totalValuation = project.totalValuation;
+        const initialPayload = {
+          projectId,
+          currentFunding,
+          totalValuation,
+          status: project.status,
+          percentage:
+            totalValuation > 0
+              ? Math.min((currentFunding / totalValuation) * 100, 100)
+              : 0,
+        };
+        res.write(`event: funding\ndata: ${JSON.stringify(initialPayload)}\n\n`);
+      }
+    } catch (err) {
+      console.error("[Worker SSE Initial State Error]:", err);
+    }
   });
 
-  // Bull Board Dashboard (strictly protected behind Admin JWT auth)
+  // Short-lived single-use handoff login exchanging Vercel-signed token for worker bullboard_session cookie
+  app.get("/admin/queues/login", async (req, res) => {
+    const rawToken = typeof req.query.token === "string" ? req.query.token : "";
+    if (!rawToken) {
+      res.status(401).json({ error: "Missing handoff token." });
+      return;
+    }
+
+    try {
+      const payload = await verifyBullBoardHandoffToken(rawToken);
+      const jtiKey = `bullboard:jti:${payload.jti}`;
+      const locked = await commandRedis.set(jtiKey, "used", "EX", 120, "NX");
+      if (locked !== "OK") {
+        res.status(401).json({ error: "Handoff token has already been used." });
+        return;
+      }
+
+      const sessionToken = await signBullBoardSessionToken({
+        id: payload.id,
+        role: payload.role,
+      });
+
+      res.cookie(BULLBOARD_COOKIE_NAME, sessionToken, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+        maxAge: 60 * 60 * 1000,
+        path: "/admin/queues",
+      });
+      res.redirect(302, "/admin/queues");
+    } catch (err) {
+      if (err instanceof BullBoardAuthError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      res.status(401).json({ error: "Invalid handoff token." });
+    }
+  });
+
+  // Bull Board Dashboard + static assets (strictly protected behind bullboard_session cookie)
   const serverAdapter = new ExpressAdapter();
   serverAdapter.setBasePath("/admin/queues");
   createBullBoard({
     queues: [new BullMQAdapter(investmentQueue)],
     serverAdapter,
   });
-  app.use("/admin/queues", requireAdminMiddleware, serverAdapter.getRouter());
+  app.use(
+    "/admin/queues",
+    requireBullBoardSessionMiddleware,
+    serverAdapter.getRouter(),
+  );
 
   const server = app.listen(PORT, () => {
     console.log(`[Worker] Listening on port ${PORT}`);

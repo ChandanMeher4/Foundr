@@ -5,7 +5,11 @@ import dbConnect from "@/lib/db";
 import Project from "@/models/Project";
 import User from "@/models/User";
 import { requireRole } from "@/lib/auth";
-import { getRedisConnection, publishFundingUpdate } from "@/lib/redis";
+import {
+  getRedisConnection,
+  getRedisKeyPrefix,
+  publishFundingUpdate,
+} from "@/lib/redis";
 import { enqueueInvestmentFlow } from "@/lib/queue";
 
 const IDEMPOTENCY_PROCESSING_TTL = 30;
@@ -62,7 +66,7 @@ export async function POST(
     const redis = process.env.REDIS_URL ? getRedisConnection() : null;
 
     if (rawIdemKey && redis) {
-      idemRedisKey = `idem:${investorId}:${rawIdemKey}`;
+      idemRedisKey = `${getRedisKeyPrefix()}idem:${investorId}:${rawIdemKey}`;
       const processingPayload: IdempotencyRecord = {
         status: "processing",
         amount,
@@ -131,16 +135,31 @@ export async function POST(
     const investmentId = investmentObjectId.toString();
     const committedAt = new Date();
 
-    // Atomic conditional increment: guarantees funding <= totalValuation in MongoDB
-    const updatedProject = await Project.findOneAndUpdate(
-      {
-        _id: projectId,
-        status: "Live",
-        minInvestment: { $lte: amount },
-        $expr: {
-          $lte: [{ $add: ["$currentFunding", amount] }, "$totalValuation"],
-        },
+    const investorObjectId = new mongoose.Types.ObjectId(investorId);
+    const atomicFilter: Record<string, unknown> = {
+      _id: projectId,
+      status: "Live",
+      minInvestment: { $lte: amount },
+      $expr: {
+        $lte: [{ $add: ["$currentFunding", amount] }, "$totalValuation"],
       },
+      ...(rawIdemKey
+        ? {
+            investors: {
+              $not: {
+                $elemMatch: {
+                  userId: investorObjectId,
+                  idempotencyKey: rawIdemKey,
+                },
+              },
+            },
+          }
+        : {}),
+    };
+
+    // Atomic conditional increment: guarantees funding <= totalValuation and per-key uniqueness in MongoDB
+    const updatedProject = await Project.findOneAndUpdate(
+      atomicFilter,
       {
         $inc: { currentFunding: amount },
         $push: {
@@ -149,6 +168,7 @@ export async function POST(
             userId: investorId,
             amount,
             date: committedAt,
+            ...(rawIdemKey ? { idempotencyKey: rawIdemKey } : {}),
           },
         },
       },
@@ -156,6 +176,84 @@ export async function POST(
     ).populate("developerName", "name email");
 
     if (!updatedProject) {
+      // Fallback for crash between MongoDB commit and Redis cache write
+      if (rawIdemKey) {
+        const priorProject = await Project.findOne({
+          _id: projectId,
+          investors: {
+            $elemMatch: {
+              userId: investorObjectId,
+              idempotencyKey: rawIdemKey,
+            },
+          },
+        }).populate("developerName", "name email");
+
+        if (priorProject) {
+          const matchedEntry = (
+            priorProject.investors as Array<{
+              _id?: mongoose.Types.ObjectId;
+              userId?: mongoose.Types.ObjectId;
+              amount: number;
+              idempotencyKey?: string;
+            }>
+          ).find(
+            (entry) =>
+              entry.userId?.toString() === investorId &&
+              entry.idempotencyKey === rawIdemKey,
+          );
+
+          if (matchedEntry && matchedEntry.amount !== amount) {
+            if (acquiredLock && idemRedisKey && redis) {
+              await redis.del(idemRedisKey);
+            }
+            return NextResponse.json(
+              {
+                error:
+                  "Idempotency-Key cannot be reused with a different amount or project.",
+              },
+              { status: 422 },
+            );
+          }
+
+          if (
+            priorProject.status === "Live" &&
+            priorProject.currentFunding >= priorProject.totalValuation
+          ) {
+            await Project.updateOne(
+              { _id: projectId, status: "Live" },
+              { $set: { status: "Funded" } },
+            );
+            priorProject.status = "Funded";
+          }
+
+          const replayBody = {
+            message: "Commitment secured successfully!",
+            investmentId: matchedEntry?._id?.toString() ?? "",
+            project: priorProject,
+          };
+
+          if (idemRedisKey && redis) {
+            await redis.set(
+              idemRedisKey,
+              JSON.stringify({
+                status: "completed",
+                amount,
+                projectId,
+                statusCode: 200,
+                body: replayBody,
+              }),
+              "EX",
+              IDEMPOTENCY_DONE_TTL,
+            );
+          }
+
+          return NextResponse.json(replayBody, {
+            status: 200,
+            headers: { "X-Idempotent-Replay": "true" },
+          });
+        }
+      }
+
       if (acquiredLock && idemRedisKey && redis) await redis.del(idemRedisKey);
 
       const existing = await Project.findById(projectId)
@@ -276,6 +374,7 @@ export async function POST(
           currentFunding: updatedProject.currentFunding,
           totalValuation: updatedProject.totalValuation,
           becameFunded,
+          ...(rawIdemKey ? { idempotencyKey: rawIdemKey } : {}),
           ip: getClientIp(req),
           createdAt: committedAt.toISOString(),
         });

@@ -5,6 +5,19 @@ type GlobalWithRedis = typeof globalThis & {
 };
 
 /**
+ * Returns the Redis key prefix ("test:" during automated tests, "" in dev/prod).
+ */
+export function getRedisKeyPrefix(): string {
+  if (process.env.REDIS_KEY_PREFIX !== undefined) {
+    return process.env.REDIS_KEY_PREFIX;
+  }
+  if (process.env.NODE_ENV === "test" || process.env.VITEST) {
+    return "test:";
+  }
+  return "";
+}
+
+/**
  * Returns the process-wide shared TCP ioredis singleton.
  * Respects Redis Cloud free-tier limits (max 30 connections) by keeping 1 connection in the web process.
  */
@@ -45,7 +58,7 @@ export async function publishFundingUpdate(payload: {
 }): Promise<void> {
   const redis = getRedisConnection();
   await redis.publish(
-    `funding:${payload.projectId}`,
+    `${getRedisKeyPrefix()}funding:${payload.projectId}`,
     JSON.stringify(payload),
   );
 }

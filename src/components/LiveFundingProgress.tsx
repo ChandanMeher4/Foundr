@@ -28,6 +28,7 @@ export default function LiveFundingProgress({
   const router = useRouter();
   const [currentFunding, setCurrentFunding] = useState(initialFunding);
   const [status, setStatus] = useState(initialStatus);
+  const [reconnectTick, setReconnectTick] = useState(0);
 
   const workerBaseUrl =
     process.env.NEXT_PUBLIC_WORKER_URL ||
@@ -38,6 +39,8 @@ export default function LiveFundingProgress({
   useEffect(() => {
     if (!workerBaseUrl) return;
 
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let disposed = false;
     const es = new EventSource(`${workerBaseUrl}/projects/${projectId}/stream`);
 
     const onFunding = (event: MessageEvent<string>) => {
@@ -57,12 +60,29 @@ export default function LiveFundingProgress({
       }
     };
 
+    const onError = () => {
+      if (disposed) return;
+      // EventSource stays permanently dead once CLOSED; re-instantiate after backoff
+      if (es.readyState === EventSource.CLOSED) {
+        es.close();
+        retryTimer = setTimeout(() => {
+          if (!disposed) {
+            setReconnectTick((n) => n + 1);
+          }
+        }, 2000);
+      }
+    };
+
     es.addEventListener("funding", onFunding);
+    es.addEventListener("error", onError);
     return () => {
+      disposed = true;
+      if (retryTimer) clearTimeout(retryTimer);
       es.removeEventListener("funding", onFunding);
+      es.removeEventListener("error", onError);
       es.close();
     };
-  }, [projectId, workerBaseUrl, router]);
+  }, [projectId, workerBaseUrl, router, reconnectTick]);
 
   const fundingPercentage = Math.min(
     (currentFunding / totalValuation) * 100,

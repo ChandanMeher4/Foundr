@@ -104,6 +104,14 @@ export default function AdminDashboard() {
                 {funded} Funded
               </span>
             </div>
+            <a
+              href="/api/admin/queues-link"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-2 bg-stone-900 hover:bg-amber-400 text-white hover:text-stone-900 text-[10px] font-bold px-3.5 py-2 rounded-full tracking-widest uppercase transition-colors"
+            >
+              Queue dashboard
+            </a>
             <Link
               href="/"
               className="inline-flex items-center gap-2 text-[10px] font-bold text-stone-400 hover:text-amber-500 tracking-widest uppercase transition-colors group"

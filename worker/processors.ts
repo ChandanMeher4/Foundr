@@ -82,6 +82,9 @@ export async function processInvestmentJob(
             projectId: data.projectId,
             userId: data.investorId,
             amount: data.amount,
+            ...(data.idempotencyKey
+              ? { idempotencyKey: data.idempotencyKey }
+              : {}),
             ip: data.ip,
             metadata: {
               projectTitle: data.projectTitle,
