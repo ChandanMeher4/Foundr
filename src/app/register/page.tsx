@@ -63,8 +63,13 @@ export default function RegisterPage() {
         router.push(data.role === "Developer" ? "/developer" : "/");
         router.refresh(); 
       } else {
-        const data = await res.json();
-        setError(data.error || "Registration failed");
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 429) {
+          const retryAfter = res.headers.get("Retry-After") || data.retryAfterSeconds || "60";
+          setError(`Too many attempts. Try again in ${retryAfter} seconds.`);
+        } else {
+          setError(data.error || "Registration failed");
+        }
       }
     } catch (err) {
       setError("An unexpected error occurred.");

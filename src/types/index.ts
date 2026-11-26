@@ -18,13 +18,15 @@ export interface IProject {
   expectedCompletion: string | Date;
   currentFunding: number;
   imageUrls: string[];
-  status: "Pending Review" | "Live" | "Funded" | "Rejected" | string;
+  status: "Pending Review" | "Live" | "Funded" | "Rejected" | "Expired" | string;
   isVerified?: boolean;
+  approvedAt?: string | Date;
 
   investors?: {
     userId: string;
     amount: number;
     date: string | Date;
+    idempotencyKey?: string;
   }[];
 }
 
@@ -43,5 +45,6 @@ export interface IUser {
   role: "Investor" | "Developer" | "Admin";
   city?: string;
   companyName?: string;
+  digestOptIn?: boolean;
   isVerifiedDeveloper?: boolean;
 }

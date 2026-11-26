@@ -89,6 +89,7 @@ export default function LiveFundingProgress({
     100,
   ).toFixed(0);
   const isFunded = status === "Funded" || currentFunding >= totalValuation;
+  const isExpired = status === "Expired";
 
   return (
     <>
@@ -108,11 +109,20 @@ export default function LiveFundingProgress({
       </div>
 
       <div>
-        <InvestButton
-          projectId={projectId}
-          minInvestment={minInvestment}
-          isFunded={isFunded}
-        />
+        {isExpired ? (
+          <button
+            disabled
+            className="w-full bg-stone-700 text-white font-bold py-4 rounded-xl shadow-md text-xs tracking-widest uppercase flex items-center justify-center cursor-not-allowed opacity-90"
+          >
+            Listing Expired
+          </button>
+        ) : (
+          <InvestButton
+            projectId={projectId}
+            minInvestment={minInvestment}
+            isFunded={isFunded}
+          />
+        )}
         <p className="text-[10px] text-center text-stone-400 mt-3 leading-relaxed">
           Committing sends an inquiry to the developer.
           No money is transferred yet.

@@ -9,6 +9,11 @@ import {
   type AuthSessionPayload,
   type UserRole,
 } from "./auth-core";
+import {
+  isSessionRevoked,
+  revokeAllUserSessions,
+  revokeTokenJti,
+} from "./revocation";
 
 // Assert JWT_SECRET is present when Next.js server module initializes
 getEncodedJwtSecret();
@@ -17,6 +22,8 @@ export {
   AUTH_COOKIE_NAME,
   signSessionToken,
   verifySessionToken,
+  revokeAllUserSessions,
+  revokeTokenJti,
   type AuthSessionPayload,
   type UserRole,
 };
@@ -39,14 +46,17 @@ export async function clearSessionCookie(): Promise<void> {
   cookieStore.delete(AUTH_COOKIE_NAME);
 }
 
-/** Reads and verifies the current request's session cookie, or returns null. */
+/** Reads, verifies, and checks Redis revocation for the current session cookie, or returns null. */
 export async function getSession(): Promise<AuthSessionPayload | null> {
   const cookieStore = await cookies();
   const token = cookieStore.get(AUTH_COOKIE_NAME)?.value;
   if (!token) return null;
 
   try {
-    return await verifySessionToken(token);
+    const payload = await verifySessionToken(token);
+    const revoked = await isSessionRevoked(payload.jti, payload.id, payload.iat);
+    if (revoked) return null;
+    return payload;
   } catch {
     return null;
   }

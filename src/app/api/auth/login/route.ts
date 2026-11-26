@@ -3,10 +3,20 @@ import bcrypt from "bcryptjs";
 import dbConnect from "@/lib/db";
 import User from "@/models/User";
 import { signSessionToken, setSessionCookie, type UserRole } from "@/lib/auth";
+import { getClientIp, rateLimit, rateLimitResponse } from "@/lib/rate-limit";
 
 export async function POST(req: Request) {
   try {
-    await dbConnect();
+    const ip = getClientIp(req);
+    const ipLimit = await rateLimit({
+      key: `login:ip:${ip}`,
+      limit: 20,
+      windowSeconds: 900,
+    });
+    if (!ipLimit.allowed) {
+      return rateLimitResponse(20, ipLimit);
+    }
+
     const body = await req.json();
     const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
     const password = typeof body.password === "string" ? body.password : "";
@@ -17,6 +27,17 @@ export async function POST(req: Request) {
         { status: 400 },
       );
     }
+
+    const acctLimit = await rateLimit({
+      key: `login:acct:${ip}:${email}`,
+      limit: 5,
+      windowSeconds: 900,
+    });
+    if (!acctLimit.allowed) {
+      return rateLimitResponse(5, acctLimit);
+    }
+
+    await dbConnect();
 
     const user = await User.findOne({ email }).select("+password");
     if (!user) {

@@ -4,8 +4,15 @@ import { revalidatePath } from "next/cache";
 import dbConnect from "@/lib/db";
 import Project from "@/models/Project";
 import { requireRole } from "@/lib/auth";
+import { cancelLifecycleJobs, scheduleExpireListing } from "@/lib/queue";
 
-const ALLOWED_STATUSES = ["Pending Review", "Live", "Funded", "Rejected"] as const;
+const ALLOWED_STATUSES = [
+  "Pending Review",
+  "Live",
+  "Funded",
+  "Rejected",
+  "Expired",
+] as const;
 
 export async function PATCH(
   request: Request,
@@ -28,6 +35,9 @@ export async function PATCH(
         return NextResponse.json({ error: "Invalid project status" }, { status: 400 });
       }
       update.status = body.status;
+      if (body.status === "Live") {
+        update.approvedAt = new Date();
+      }
     }
 
     if (body.isVerified !== undefined) {
@@ -47,11 +57,30 @@ export async function PATCH(
     await dbConnect();
 
     const updatedProject = await Project.findByIdAndUpdate(id, update, {
-      new: true,
+      returnDocument: "after",
     });
 
     if (!updatedProject) {
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
+    }
+
+    if (process.env.REDIS_URL && body.status !== undefined) {
+      try {
+        if (updatedProject.status === "Live" && updatedProject.approvedAt) {
+          await scheduleExpireListing({
+            projectId: id,
+            approvedAt: new Date(updatedProject.approvedAt).toISOString(),
+          });
+        } else if (
+          updatedProject.status === "Funded" ||
+          updatedProject.status === "Rejected" ||
+          updatedProject.status === "Expired"
+        ) {
+          await cancelLifecycleJobs(id);
+        }
+      } catch (queueErr) {
+        console.error("[BullMQ Lifecycle Patch Error]:", queueErr);
+      }
     }
 
     revalidatePath("/");

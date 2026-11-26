@@ -3,6 +3,7 @@ import dbConnect from "@/lib/db";
 import Project from "@/models/Project";
 import "@/models/User";
 import { requireRole } from "@/lib/auth";
+import { scheduleReviewReminder } from "@/lib/queue";
 
 export async function GET() {
   try {
@@ -76,6 +77,14 @@ export async function POST(req: Request) {
       imageUrls,
       status: "Pending Review",
     });
+
+    if (process.env.REDIS_URL) {
+      try {
+        await scheduleReviewReminder(newProject._id.toString());
+      } catch (queueErr) {
+        console.error("[BullMQ Review Reminder Error]:", queueErr);
+      }
+    }
 
     return NextResponse.json(
       { message: "Project submitted successfully", project: newProject },

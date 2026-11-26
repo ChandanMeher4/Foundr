@@ -10,7 +10,8 @@ import {
   getRedisKeyPrefix,
   publishFundingUpdate,
 } from "@/lib/redis";
-import { enqueueInvestmentFlow } from "@/lib/queue";
+import { cancelLifecycleJobs, enqueueInvestmentFlow } from "@/lib/queue";
+import { getClientIp, rateLimit, rateLimitResponse } from "@/lib/rate-limit";
 
 const IDEMPOTENCY_PROCESSING_TTL = 30;
 const IDEMPOTENCY_DONE_TTL = 86400;
@@ -21,12 +22,6 @@ interface IdempotencyRecord {
   projectId: string;
   statusCode?: number;
   body?: Record<string, unknown>;
-}
-
-function getClientIp(req: Request): string {
-  const forwarded = req.headers.get("x-forwarded-for");
-  if (forwarded) return forwarded.split(",")[0].trim();
-  return req.headers.get("x-real-ip") || "unknown";
 }
 
 async function sleep(ms: number): Promise<void> {
@@ -43,6 +38,16 @@ export async function POST(
   try {
     const auth = await requireRole();
     if (auth.response) return auth.response;
+
+    const investorId = auth.session.id;
+    const investLimit = await rateLimit({
+      key: `invest:user:${investorId}`,
+      limit: 10,
+      windowSeconds: 60,
+    });
+    if (!investLimit.allowed) {
+      return rateLimitResponse(10, investLimit);
+    }
 
     const { id: projectId } = await params;
     if (!mongoose.Types.ObjectId.isValid(projectId)) {
@@ -61,7 +66,6 @@ export async function POST(
       );
     }
 
-    const investorId = auth.session.id;
     const rawIdemKey = req.headers.get("idempotency-key")?.trim();
     const redis = process.env.REDIS_URL ? getRedisConnection() : null;
 
@@ -378,6 +382,9 @@ export async function POST(
           ip: getClientIp(req),
           createdAt: committedAt.toISOString(),
         });
+        if (becameFunded) {
+          await cancelLifecycleJobs(projectId);
+        }
       } catch (queueErr) {
         // Queue failures must never fail the committed MongoDB investment
         console.error("[BullMQ Enqueue Error]:", queueErr);

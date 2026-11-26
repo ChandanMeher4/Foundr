@@ -55,6 +55,10 @@ export default function InvestButton({
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
+        if (res.status === 429) {
+          const retryAfter = res.headers.get("Retry-After") || data.retryAfterSeconds || "60";
+          throw new Error(`Too many attempts. Try again in ${retryAfter} seconds.`);
+        }
         throw new Error(data.error || "Failed to process investment");
       }
       setSuccess(true);

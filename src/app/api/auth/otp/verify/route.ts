@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import dbConnect from "@/lib/db";
 import User from "@/models/User";
 import { signSessionToken, setSessionCookie, type UserRole } from "@/lib/auth";
+import { getClientIp, rateLimit, rateLimitResponse } from "@/lib/rate-limit";
+import { verifyAndConsumeOtp } from "@/lib/otp";
 
 export async function POST(req: Request) {
   if (process.env.OTP_LOGIN_ENABLED !== "true") {
@@ -12,9 +14,20 @@ export async function POST(req: Request) {
   }
 
   try {
-    await dbConnect();
+    const ip = getClientIp(req);
+    const ipLimit = await rateLimit({
+      key: `otp-verify:ip:${ip}`,
+      limit: 20,
+      windowSeconds: 900,
+      failClosed: true,
+    });
+    if (!ipLimit.allowed) {
+      return rateLimitResponse(20, ipLimit);
+    }
+
     const body = await req.json();
-    const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+    const email =
+      typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
     const otp = typeof body.otp === "string" ? body.otp.trim() : "";
 
     if (!email || !otp) {
@@ -24,22 +37,40 @@ export async function POST(req: Request) {
       );
     }
 
-    const user = await User.findOne({
-      email,
-      otp,
-      otpExpiry: { $gt: new Date() },
-    });
+    const result = await verifyAndConsumeOtp(email, otp);
 
-    if (!user) {
+    if (result.status === "unavailable") {
+      return NextResponse.json(
+        { error: "OTP verification service temporarily unavailable." },
+        { status: 503 },
+      );
+    }
+
+    if (result.status === "locked") {
+      return rateLimitResponse(5, {
+        allowed: false,
+        remaining: 0,
+        retryAfterSeconds: result.retryAfterSeconds,
+      });
+    }
+
+    if (result.status !== "valid") {
       return NextResponse.json(
         { error: "Invalid or expired OTP." },
         { status: 400 },
       );
     }
 
-    user.otp = undefined;
-    user.otpExpiry = undefined;
-    await user.save();
+    await dbConnect();
+    const user = await User.findOne({ email })
+      .select("_id role name city")
+      .lean();
+    if (!user) {
+      return NextResponse.json(
+        { error: "Invalid or expired OTP." },
+        { status: 400 },
+      );
+    }
 
     const token = await signSessionToken({
       id: user._id.toString(),

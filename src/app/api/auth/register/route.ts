@@ -3,12 +3,23 @@ import dbConnect from "@/lib/db";
 import User from "@/models/User";
 import bcrypt from "bcryptjs";
 import { signSessionToken, setSessionCookie } from "@/lib/auth";
+import { getClientIp, rateLimit, rateLimitResponse } from "@/lib/rate-limit";
 
 const PUBLIC_ROLES = ["Investor", "Developer"] as const;
 type PublicRole = (typeof PUBLIC_ROLES)[number];
 
 export async function POST(req: Request) {
   try {
+    const ip = getClientIp(req);
+    const regLimit = await rateLimit({
+      key: `register:ip:${ip}`,
+      limit: 5,
+      windowSeconds: 3600,
+    });
+    if (!regLimit.allowed) {
+      return rateLimitResponse(5, regLimit);
+    }
+
     await dbConnect();
 
     const body = await req.json();

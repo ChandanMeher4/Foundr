@@ -34,6 +34,9 @@ export default function Marketplace() {
 
   // THE FILTER ENGINE: This runs instantly every time a user types or changes a dropdown
   const filteredProjects = projects.filter((project: any) => {
+    if (project.status === "Expired" || project.status === "Rejected" || project.status === "Pending Review") {
+      return false;
+    }
     const matchesSearch =
       project.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
       project.location?.address?.toLowerCase().includes(searchQuery.toLowerCase());

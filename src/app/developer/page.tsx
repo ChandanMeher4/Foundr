@@ -92,6 +92,8 @@ export default async function DeveloperDashboard() {
                       ? "bg-gradient-to-r from-emerald-500 to-teal-400"
                       : project.status === "Live"
                       ? "bg-gradient-to-r from-emerald-400 to-emerald-500"
+                      : project.status === "Expired"
+                      ? "bg-stone-400"
                       : "bg-gradient-to-r from-amber-400 to-amber-500"
                   }`} />
 
@@ -120,6 +122,8 @@ export default async function DeveloperDashboard() {
                             ? "bg-emerald-600 text-white border-emerald-600 font-black"
                             : project.status === "Live"
                             ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                            : project.status === "Expired"
+                            ? "bg-stone-100 text-stone-600 border-stone-300"
                             : "bg-amber-50 text-amber-700 border-amber-200"
                         }`}>
                           {project.status}

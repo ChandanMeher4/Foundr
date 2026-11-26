@@ -1,16 +1,18 @@
 import crypto from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import mongoose from "mongoose";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 let activeAuthToken = "";
+const requestTokenAls = new AsyncLocalStorage<string>();
 
 // Provide request-scoped cookies and Next.js cache stubs so the real Route Handler executes verbatim
 vi.mock("next/headers", () => ({
   cookies: async () => ({
-    get: (name: string) =>
-      name === "foundr_token" && activeAuthToken
-        ? { value: activeAuthToken }
-        : undefined,
+    get: (name: string) => {
+      const token = requestTokenAls.getStore() ?? activeAuthToken;
+      return name === "foundr_token" && token ? { value: token } : undefined;
+    },
     set: () => {},
     delete: () => {},
   }),
@@ -166,11 +168,34 @@ describe("Investment Concurrency & Idempotency Integration", () => {
 
     const requestCount = 20;
     const commitAmount = 200_000;
+    const suffix = crypto.randomBytes(4).toString("hex");
+    const batchInvestors = await User.insertMany(
+      Array.from({ length: requestCount }, (_, idx) => ({
+        name: `Batch Investor ${idx}`,
+        email: `batch-inv-${suffix}-${idx}@foundr.local`,
+        password: "hashed_placeholder_not_used",
+        role: "Investor",
+        city: "Bengaluru",
+      })),
+    );
+    for (const u of batchInvestors) {
+      createdUserIds.push(u._id.toString());
+    }
+    const batchTokens = await Promise.all(
+      batchInvestors.map((u) =>
+        signSessionToken({
+          id: u._id.toString(),
+          role: "Investor",
+          name: u.name,
+          city: u.city,
+        }),
+      ),
+    );
 
     const responses = await Promise.all(
-      Array.from({ length: requestCount }, () => {
+      batchTokens.map((token) => {
         const key = crypto.randomUUID();
-        createdRedisKeys.push(`test:idem:${investorId}:${key}`);
+        createdRedisKeys.push(`test:idem:${token.slice(0, 8)}:${key}`);
 
         const req = new Request(
           `http://localhost:3000/api/projects/${projectId}/invest`,
@@ -183,7 +208,9 @@ describe("Investment Concurrency & Idempotency Integration", () => {
             body: JSON.stringify({ amount: commitAmount }),
           },
         );
-        return investPost(req, { params: Promise.resolve({ id: projectId }) });
+        return requestTokenAls.run(token, () =>
+          investPost(req, { params: Promise.resolve({ id: projectId }) }),
+        );
       }),
     );
 

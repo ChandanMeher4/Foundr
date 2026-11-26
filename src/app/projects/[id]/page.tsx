@@ -59,6 +59,11 @@ export default async function ProjectDetailsPage({
                     ✓ Fully Funded
                   </span>
                 )}
+                {project.status === "Expired" && (
+                  <span className="bg-stone-700 text-white text-[9px] font-black px-2.5 py-0.5 rounded-full tracking-widest uppercase">
+                    Expired
+                  </span>
+                )}
               </div>
 
               <h1

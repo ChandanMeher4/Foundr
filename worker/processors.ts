@@ -1,8 +1,14 @@
 import type { Job, Queue } from "bullmq";
 import dbConnect from "../src/lib/db";
 import { sendAppEmail } from "../src/lib/email";
-import type { InvestmentJobPayload } from "../src/lib/queue";
+import { cleanupLegacyOtpFields } from "../src/lib/otp";
+import type {
+  ExpireListingPayload,
+  InvestmentJobPayload,
+  ReviewReminderPayload,
+} from "../src/lib/queue";
 import AuditLog from "../src/models/AuditLog";
+import PlatformStats from "../src/models/PlatformStats";
 import Project from "../src/models/Project";
 import User from "../src/models/User";
 
@@ -13,6 +19,21 @@ interface FundedFanoutPayload {
   recipientEmail: string;
   recipientName: string;
   recipientRole: "Investor" | "Developer" | "Admin";
+}
+
+interface DigestProjectSummary {
+  id: string;
+  title: string;
+  address: string;
+  category: string;
+  minInvestment: number;
+  totalValuation: number;
+}
+
+interface SendDigestPayload {
+  recipientEmail: string;
+  recipientName: string;
+  projects: DigestProjectSummary[];
 }
 
 function formatInr(value: number): string {
@@ -194,6 +215,317 @@ export async function processInvestmentJob(
     }
 
     default:
-      throw new Error(`Unknown job name: ${job.name}`);
+      throw new Error(`Unknown investment job name: ${job.name}`);
+  }
+}
+
+export async function processLifecycleJob(job: Job): Promise<unknown> {
+  await dbConnect();
+
+  switch (job.name) {
+    case "expire-listing": {
+      const { projectId, approvedAt } = job.data as ExpireListingPayload;
+      const project = await Project.findById(projectId)
+        .populate("developerName", "name email")
+        .lean();
+
+      if (!project) {
+        return { noOp: true, reason: "project_not_found" };
+      }
+      if (project.status !== "Live") {
+        return { noOp: true, reason: `status_${project.status}` };
+      }
+      if ((project.currentFunding || 0) >= project.totalValuation) {
+        return { noOp: true, reason: "already_funded" };
+      }
+      if (
+        !project.approvedAt ||
+        new Date(project.approvedAt).toISOString() !==
+          new Date(approvedAt).toISOString()
+      ) {
+        return { noOp: true, reason: "approvedAt_mismatch" };
+      }
+
+      const updateRes = await Project.updateOne(
+        {
+          _id: projectId,
+          status: "Live",
+          approvedAt: new Date(approvedAt),
+          currentFunding: { $lt: project.totalValuation },
+        },
+        { $set: { status: "Expired" } },
+      );
+
+      if (updateRes.modifiedCount === 0) {
+        return { noOp: true, reason: "concurrent_state_change" };
+      }
+
+      const dev = project.developerName as
+        | { name?: string; email?: string }
+        | undefined;
+      const recipient = dev?.email || process.env.ADMIN_EMAIL;
+      if (recipient) {
+        try {
+          await sendAppEmail({
+            to: recipient,
+            subject: `Listing Expired: ${project.title}`,
+            html: `
+              <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
+                <h2>Listing Window Closed</h2>
+                <p>Hello ${dev?.name || "Developer"},</p>
+                <p>Your listing <strong>${project.title}</strong> reached its 30-day window at ${formatInr(project.currentFunding || 0)} / ${formatInr(project.totalValuation)} and is now marked <strong>Expired</strong>.</p>
+              </div>
+            `,
+          });
+        } catch (emailErr) {
+          console.error("[expire-listing] Developer email failed:", emailErr);
+        }
+      }
+
+      return { expired: true, projectId };
+    }
+
+    case "review-reminder": {
+      const { projectId } = job.data as ReviewReminderPayload;
+      const project = await Project.findById(projectId).lean();
+      if (!project || project.status !== "Pending Review") {
+        return {
+          noOp: true,
+          reason: project ? `status_${project.status}` : "project_not_found",
+        };
+      }
+
+      const admins = await User.find({ role: "Admin" })
+        .select("email")
+        .lean();
+      const recipients = Array.from(
+        new Set(
+          [
+            ...admins.map((a) => a.email).filter(Boolean),
+            process.env.ADMIN_EMAIL?.trim(),
+          ].filter((e): e is string => Boolean(e)),
+        ),
+      );
+
+      if (recipients.length === 0) {
+        console.log(
+          `[review-reminder] Pending Review reminder skipped (no admin recipients) for ${projectId}`,
+        );
+        return { noOp: false, reminded: false, reason: "no_admin_recipients" };
+      }
+
+      try {
+        await sendAppEmail({
+          to: recipients,
+          subject: `Admin Review Reminder: ${project.title}`,
+          html: `
+            <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
+              <h2>Pending Review Listing Reminder</h2>
+              <p><strong>${project.title}</strong> has been awaiting moderation for over 48 hours.</p>
+              <p>Target Valuation: ${formatInr(project.totalValuation)}</p>
+            </div>
+          `,
+        });
+      } catch (emailErr) {
+        console.error("[review-reminder] Admin email failed:", emailErr);
+      }
+
+      return { reminded: true, projectId, recipientCount: recipients.length };
+    }
+
+    default:
+      throw new Error(`Unknown lifecycle job name: ${job.name}`);
+  }
+}
+
+export async function processScheduledJob(
+  job: Job,
+  scheduledQueue: Queue,
+  allQueues: Queue[] = [scheduledQueue],
+): Promise<unknown> {
+  await dbConnect();
+
+  switch (job.name) {
+    case "daily-digest": {
+      const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const recentListings = await Project.find({
+        status: "Live",
+        approvedAt: { $gte: since },
+      })
+        .select("title location category totalValuation minInvestment")
+        .lean();
+
+      if (recentListings.length === 0) {
+        return {
+          mode: process.env.EMAIL_MODE === "live" ? "live" : "sandbox",
+          newProjects: 0,
+          notifiedCount: 0,
+        };
+      }
+
+      const summaries: DigestProjectSummary[] = recentListings.map((p) => ({
+        id: p._id.toString(),
+        title: p.title,
+        address: p.location?.address || "",
+        category: p.category,
+        minInvestment: p.minInvestment,
+        totalValuation: p.totalValuation,
+      }));
+
+      const investors = await User.find({
+        role: "Investor",
+        digestOptIn: { $ne: false },
+      })
+        .select("_id name email city")
+        .lean();
+
+      if (process.env.EMAIL_MODE !== "live") {
+        const adminRecipient =
+          process.env.ADMIN_EMAIL?.trim() || "sandbox-admin@foundr.local";
+        await sendAppEmail({
+          to: adminRecipient,
+          subject: `Daily Digest Summary: ${summaries.length} new listing(s) for ${investors.length} investor(s)`,
+          html: `
+            <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
+              <h2>Daily Digest (Sandbox Summary)</h2>
+              <p><strong>${summaries.length}</strong> new project(s) approved in the last 24 hours would have been sent to <strong>${investors.length}</strong> opted-in investor(s).</p>
+              <ul>${summaries.map((p) => `<li>${p.title} (${p.address}) — Min ${formatInr(p.minInvestment)}</li>`).join("")}</ul>
+            </div>
+          `,
+        });
+
+        return {
+          mode: "sandbox",
+          summarySent: true,
+          wouldNotifyCount: investors.length,
+          newProjects: summaries.length,
+        };
+      }
+
+      const dayKey = new Date().toISOString().slice(0, 10);
+      const jobs = investors
+        .filter((inv) => Boolean(inv.email))
+        .map((inv) => {
+          const city = (inv.city || "").trim().toLowerCase();
+          const cityMatches = city
+            ? summaries.filter((s) => s.address.toLowerCase().includes(city))
+            : [];
+          const matchedProjects =
+            cityMatches.length > 0 ? cityMatches : summaries;
+
+          return {
+            name: "send-digest",
+            data: {
+              recipientEmail: inv.email,
+              recipientName: inv.name || "Investor",
+              projects: matchedProjects,
+            } satisfies SendDigestPayload,
+            opts: {
+              attempts: 5,
+              backoff: { type: "exponential" as const, delay: 2000 },
+              removeOnComplete: { count: 200 },
+              removeOnFail: false,
+              jobId: `send-digest_${dayKey}_${inv._id.toString()}`,
+            },
+          };
+        });
+
+      if (jobs.length > 0) {
+        await scheduledQueue.addBulk(jobs);
+      }
+
+      return {
+        mode: "live",
+        investorsQueued: jobs.length,
+        newProjects: summaries.length,
+      };
+    }
+
+    case "send-digest": {
+      const data = job.data as SendDigestPayload;
+      return sendAppEmail({
+        to: data.recipientEmail,
+        subject: `Foundr Daily Opportunities: ${data.projects.length} New Listing(s)`,
+        html: `
+          <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2>New Opportunities on Foundr</h2>
+            <p>Hello ${data.recipientName},</p>
+            <ul>${data.projects.map((p) => `<li><strong>${p.title}</strong> (${p.address}) — Min ${formatInr(p.minInvestment)} / Target ${formatInr(p.totalValuation)}</li>`).join("")}</ul>
+          </div>
+        `,
+      });
+    }
+
+    case "nightly-cleanup": {
+      const completedGraceMs = 7 * 24 * 60 * 60 * 1000;
+      const failedGraceMs = 30 * 24 * 60 * 60 * 1000;
+
+      let completedCleaned = 0;
+      let failedCleaned = 0;
+
+      for (const q of allQueues) {
+        const cleanedCompleted = await q.clean(completedGraceMs, 1000, "completed");
+        const cleanedFailed = await q.clean(failedGraceMs, 1000, "failed");
+        completedCleaned += cleanedCompleted.length;
+        failedCleaned += cleanedFailed.length;
+      }
+
+      const legacyOtpUsersCleaned = await cleanupLegacyOtpFields();
+      console.log(
+        `[Nightly Cleanup] completedCleaned=${completedCleaned} failedCleaned=${failedCleaned} legacyOtpUsersCleaned=${legacyOtpUsersCleaned}`,
+      );
+
+      return {
+        completedCleaned,
+        failedCleaned,
+        legacyOtpUsersCleaned,
+      };
+    }
+
+    case "weekly-stats": {
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      const [liveListings, fundedListings, fundingAgg, investorCount, newUsersLast7Days] =
+        await Promise.all([
+          Project.countDocuments({ status: "Live" }),
+          Project.countDocuments({ status: "Funded" }),
+          Project.aggregate<{ total: number }>([
+            { $match: { status: { $in: ["Live", "Funded"] } } },
+            { $group: { _id: null, total: { $sum: "$currentFunding" } } },
+          ]),
+          User.countDocuments({ role: "Investor" }),
+          User.countDocuments({ createdAt: { $gte: sevenDaysAgo } }),
+        ]);
+
+      const totalCommitted = fundingAgg[0]?.total ?? 0;
+      const computedAt = new Date();
+
+      await PlatformStats.findOneAndUpdate(
+        { key: "latest" },
+        {
+          $set: {
+            key: "latest",
+            liveListings,
+            fundedListings,
+            totalCommitted,
+            investorCount,
+            newUsersLast7Days,
+            computedAt,
+          },
+        },
+        { upsert: true, returnDocument: "after" },
+      );
+
+      return {
+        liveListings,
+        fundedListings,
+        totalCommitted,
+        investorCount,
+        newUsersLast7Days,
+        computedAt: computedAt.toISOString(),
+      };
+    }
+
+    default:
+      throw new Error(`Unknown scheduled job name: ${job.name}`);
   }
 }

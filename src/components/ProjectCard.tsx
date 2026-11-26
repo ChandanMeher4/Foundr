@@ -40,6 +40,13 @@ export default function ProjectCard({ project }: { project: IProject }) {
               </span>
             </div>
           )}
+          {project.status === "Expired" && (
+            <div className="bg-stone-700 text-white px-2.5 py-1 rounded-full shadow-md">
+              <span className="text-[10px] font-black tracking-widest uppercase">
+                Expired
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Verified Badge */}

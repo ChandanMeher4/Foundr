@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import dbConnect from "@/lib/db";
 import Project from "@/models/Project";
 import { requireRole } from "@/lib/auth";
+import { cancelLifecycleJobs } from "@/lib/queue";
 
 export async function DELETE(
   _request: Request,
@@ -23,6 +24,14 @@ export async function DELETE(
     const deletedProject = await Project.findByIdAndDelete(id);
     if (!deletedProject) {
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
+    }
+
+    if (process.env.REDIS_URL) {
+      try {
+        await cancelLifecycleJobs(id);
+      } catch (queueErr) {
+        console.error("[BullMQ Lifecycle Delete Cancel Error]:", queueErr);
+      }
     }
 
     revalidatePath("/");

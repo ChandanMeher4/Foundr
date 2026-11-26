@@ -7,8 +7,13 @@ import { Queue, Worker, type ConnectionOptions } from "bullmq";
 import { createBullBoard } from "@bull-board/api";
 import { BullMQAdapter } from "@bull-board/api/bullMQAdapter";
 import { ExpressAdapter } from "@bull-board/express";
-import { processInvestmentJob } from "./processors";
+import {
+  processInvestmentJob,
+  processLifecycleJob,
+  processScheduledJob,
+} from "./processors";
 import dbConnect from "../src/lib/db";
+import { cleanupLegacyOtpFields } from "../src/lib/otp";
 import Project from "../src/models/Project";
 import {
   BULLBOARD_COOKIE_NAME,
@@ -17,7 +22,12 @@ import {
   verifyBullBoardHandoffToken,
   verifyBullBoardSessionToken,
 } from "../src/lib/auth-core";
-import { INVESTMENT_EVENTS_QUEUE } from "../src/lib/queue";
+import {
+  INVESTMENT_EVENTS_QUEUE,
+  LIFECYCLE_QUEUE,
+  SCHEDULED_QUEUE,
+  getBullPrefix,
+} from "../src/lib/queue";
 
 const { redisUrl } = validateWorkerEnv();
 const PORT = Number(process.env.PORT || 4000);
@@ -132,38 +142,111 @@ async function requireBullBoardSessionMiddleware(
   }
 }
 
+/**
+ * Idempotently registers recurring Asia/Kolkata BullMQ Job Schedulers so restarts never duplicate runs.
+ * BullMQ does not backfill runs missed while the worker was stopped or sleeping.
+ */
+export async function registerScheduledJobs(
+  scheduledQueue: Queue,
+): Promise<void> {
+  await scheduledQueue.upsertJobScheduler(
+    "daily-digest-scheduler",
+    { pattern: "0 8 * * *", tz: "Asia/Kolkata" },
+    { name: "daily-digest", data: {} },
+  );
+  await scheduledQueue.upsertJobScheduler(
+    "nightly-cleanup-scheduler",
+    { pattern: "30 2 * * *", tz: "Asia/Kolkata" },
+    { name: "nightly-cleanup", data: {} },
+  );
+  await scheduledQueue.upsertJobScheduler(
+    "weekly-stats-scheduler",
+    { pattern: "0 9 * * 1", tz: "Asia/Kolkata" },
+    { name: "weekly-stats", data: {} },
+  );
+}
+
 async function main() {
-  // Dedicated 3-connection architecture (well below Redis Cloud's 30-connection free tier):
-  // 1. commandRedis (health, config check, Queue/BullBoard)
-  // 2. workerRedis (BullMQ Worker blocking loop)
-  // 3. subRedis (single psubscribe('funding:*') multiplexing all SSE clients)
+  // Connection budget (Redis Cloud 30-conn free tier):
+  // - commandRedis: shared across health, config/clients checks, Queues & Bull Board
+  // - 3 Worker connections: one per BullMQ Worker (investment-events, lifecycle, scheduled)
+  // - subRedis: single psubscribe('funding:*') multiplexing all SSE clients
   const commandRedis = createRedis("cmd");
-  const workerRedis = createRedis("worker");
+  const investWorkerRedis = createRedis("worker-invest");
+  const lifecycleWorkerRedis = createRedis("worker-lifecycle");
+  const scheduledWorkerRedis = createRedis("worker-scheduled");
   const subRedis = createRedis("sub");
 
   const evictionPolicy = await verifyEvictionPolicy(commandRedis);
   const initialClients = await getConnectedClients(commandRedis);
   console.log(`[Redis] Connected clients: ${initialClients ?? "unknown"}`);
 
-  const investmentQueue = new Queue(INVESTMENT_EVENTS_QUEUE, {
+  try {
+    const cleanedOtpUsers = await cleanupLegacyOtpFields();
+    console.log(
+      `[OTP Cleanup] Removed legacy otp/otpExpiry fields from ${cleanedOtpUsers} user(s).`,
+    );
+  } catch (cleanupErr) {
+    console.warn(
+      "[OTP Cleanup WARNING] Startup legacy OTP cleanup failed:",
+      cleanupErr instanceof Error ? cleanupErr.message : cleanupErr,
+    );
+  }
+
+  const bullPrefix = getBullPrefix();
+  const queueOpts = {
     connection: commandRedis as unknown as ConnectionOptions,
-  });
+    ...(bullPrefix ? { prefix: bullPrefix } : {}),
+  };
+
+  const investmentQueue = new Queue(INVESTMENT_EVENTS_QUEUE, queueOpts);
+  const lifecycleQueue = new Queue(LIFECYCLE_QUEUE, queueOpts);
+  const scheduledQueue = new Queue(SCHEDULED_QUEUE, queueOpts);
+  const allQueues = [investmentQueue, lifecycleQueue, scheduledQueue];
+
+  await registerScheduledJobs(scheduledQueue);
 
   const worker = new Worker(
     INVESTMENT_EVENTS_QUEUE,
     async (job) => processInvestmentJob(job, investmentQueue),
     {
-      connection: workerRedis as unknown as ConnectionOptions,
+      connection: investWorkerRedis as unknown as ConnectionOptions,
       concurrency: WORKER_CONCURRENCY,
+      ...(bullPrefix ? { prefix: bullPrefix } : {}),
     },
   );
 
-  worker.on("completed", (job) => {
-    console.log(`[Worker] Completed ${job.name} (${job.id})`);
-  });
-  worker.on("failed", (job, err) => {
-    console.error(`[Worker] Failed ${job?.name} (${job?.id}):`, err.message);
-  });
+  const lifecycleWorker = new Worker(
+    LIFECYCLE_QUEUE,
+    async (job) => processLifecycleJob(job),
+    {
+      connection: lifecycleWorkerRedis as unknown as ConnectionOptions,
+      concurrency: 2,
+      ...(bullPrefix ? { prefix: bullPrefix } : {}),
+    },
+  );
+
+  const scheduledWorker = new Worker(
+    SCHEDULED_QUEUE,
+    async (job) => processScheduledJob(job, scheduledQueue, allQueues),
+    {
+      connection: scheduledWorkerRedis as unknown as ConnectionOptions,
+      concurrency: 1,
+      ...(bullPrefix ? { prefix: bullPrefix } : {}),
+    },
+  );
+
+  for (const w of [worker, lifecycleWorker, scheduledWorker]) {
+    w.on("completed", (job) => {
+      console.log(`[Worker:${w.name}] Completed ${job.name} (${job.id})`);
+    });
+    w.on("failed", (job, err) => {
+      console.error(
+        `[Worker:${w.name}] Failed ${job?.name} (${job?.id}):`,
+        err.message,
+      );
+    });
+  }
 
   // Single subscriber fan-out map for public SSE funding progress streams
   const sseClients = new Map<string, Set<Response>>();
@@ -198,12 +281,41 @@ async function main() {
         ),
       ]);
       if (pong !== "PONG") throw new Error(`Unexpected ping response: ${pong}`);
-      const connectedClients = await getConnectedClients(commandRedis);
+      const [connectedClients, investCounts, lifecycleCounts, scheduledCounts] =
+        await Promise.all([
+          getConnectedClients(commandRedis),
+          investmentQueue.getJobCounts(
+            "wait",
+            "active",
+            "delayed",
+            "failed",
+            "completed",
+          ),
+          lifecycleQueue.getJobCounts(
+            "wait",
+            "active",
+            "delayed",
+            "failed",
+            "completed",
+          ),
+          scheduledQueue.getJobCounts(
+            "wait",
+            "active",
+            "delayed",
+            "failed",
+            "completed",
+          ),
+        ]);
       res.status(200).json({
         status: "ok",
         redis: "connected",
         evictionPolicy: evictionPolicy ?? "unknown",
         connected_clients: connectedClients,
+        queues: {
+          [INVESTMENT_EVENTS_QUEUE]: investCounts,
+          [LIFECYCLE_QUEUE]: lifecycleCounts,
+          [SCHEDULED_QUEUE]: scheduledCounts,
+        },
         uptimeSeconds: Math.round(process.uptime()),
       });
     } catch (err) {
@@ -325,7 +437,11 @@ async function main() {
   const serverAdapter = new ExpressAdapter();
   serverAdapter.setBasePath("/admin/queues");
   createBullBoard({
-    queues: [new BullMQAdapter(investmentQueue)],
+    queues: [
+      new BullMQAdapter(investmentQueue),
+      new BullMQAdapter(lifecycleQueue),
+      new BullMQAdapter(scheduledQueue),
+    ],
     serverAdapter,
   });
   app.use(
@@ -345,7 +461,11 @@ async function main() {
     console.log(`[Worker] Received ${signal}, shutting down gracefully...`);
     server.close();
     await worker.close();
+    await lifecycleWorker.close();
+    await scheduledWorker.close();
     await investmentQueue.close();
+    await lifecycleQueue.close();
+    await scheduledQueue.close();
     await subRedis.quit();
     await commandRedis.quit();
     process.exit(0);
@@ -355,7 +475,9 @@ async function main() {
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
 }
 
-main().catch((err) => {
-  console.error("[Worker] Startup fatal error:", err);
-  process.exit(1);
-});
+if (process.env.NODE_ENV !== "test" && !process.env.VITEST) {
+  main().catch((err) => {
+    console.error("[Worker] Startup fatal error:", err);
+    process.exit(1);
+  });
+}

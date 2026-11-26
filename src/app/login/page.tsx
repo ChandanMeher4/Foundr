@@ -33,8 +33,13 @@ export default function LoginPage() {
         router.push(role === "Admin" ? "/admin" : role === "Developer" ? "/developer" : "/");
         router.refresh();
       } else {
-        const data = await res.json();
-        setError(data.error || "Login failed");
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 429) {
+          const retryAfter = res.headers.get("Retry-After") || data.retryAfterSeconds || "60";
+          setError(`Too many attempts. Try again in ${retryAfter} seconds.`);
+        } else {
+          setError(data.error || "Login failed");
+        }
       }
     } catch (err) {
       setError("An unexpected error occurred.");
@@ -59,8 +64,13 @@ export default function LoginPage() {
         setMessage("A 6-digit secure code has been sent to your email.");
         setView("verify_otp");
       } else {
-        const data = await res.json();
-        setError(data.error || "Failed to send OTP.");
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 429) {
+          const retryAfter = res.headers.get("Retry-After") || data.retryAfterSeconds || "60";
+          setError(`Too many attempts. Try again in ${retryAfter} seconds.`);
+        } else {
+          setError(data.error || "Failed to send OTP.");
+        }
       }
     } catch (err) {
       setError("An unexpected error occurred.");
@@ -86,8 +96,13 @@ export default function LoginPage() {
         router.push(role === "Admin" ? "/admin" : role === "Developer" ? "/developer" : "/");
         router.refresh();
       } else {
-        const data = await res.json();
-        setError(data.error || "Invalid or expired OTP.");
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 429) {
+          const retryAfter = res.headers.get("Retry-After") || data.retryAfterSeconds || "60";
+          setError(`Too many attempts. Try again in ${retryAfter} seconds.`);
+        } else {
+          setError(data.error || "Invalid or expired OTP.");
+        }
       }
     } catch (err) {
       setError("An unexpected error occurred.");

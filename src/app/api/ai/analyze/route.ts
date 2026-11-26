@@ -1,8 +1,19 @@
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
+import { getClientIp, rateLimit, rateLimitResponse } from "@/lib/rate-limit";
 
 export async function POST(req: Request) {
   try {
+    const ip = getClientIp(req);
+    const aiLimit = await rateLimit({
+      key: `ai:ip:${ip}`,
+      limit: 20,
+      windowSeconds: 3600,
+    });
+    if (!aiLimit.allowed) {
+      return rateLimitResponse(20, aiLimit);
+    }
+
     if (!process.env.GROQ_API_KEY) {
       return NextResponse.json({ error: "Groq API key not configured." }, { status: 500 });
     }

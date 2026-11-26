@@ -12,6 +12,7 @@ export interface AuthSessionPayload extends JWTPayload {
   role: UserRole;
   name: string;
   city?: string;
+  jti: string;
 }
 
 export interface BullBoardHandoffPayload extends JWTPayload {
@@ -46,27 +47,31 @@ export function getEncodedJwtSecret(): Uint8Array {
   return new TextEncoder().encode(rawSecret);
 }
 
-/** Signs a 7-day HS256 JWT containing verified user session claims. */
+/** Signs a 7-day HS256 JWT containing verified user session claims and a random jti. */
 export async function signSessionToken(payload: {
   id: string;
   role: UserRole;
   name: string;
   city?: string;
 }): Promise<string> {
+  const jti = globalThis.crypto.randomUUID();
   return new SignJWT(payload)
     .setProtectedHeader({ alg: "HS256" })
+    .setJti(jti)
     .setIssuedAt()
     .setExpirationTime(TOKEN_TTL)
     .sign(getEncodedJwtSecret());
 }
 
-/** Verifies a JWT string against JWT_SECRET and validates required identity claims. */
+/** Verifies a JWT string against JWT_SECRET and validates required identity + jti claims. */
 export async function verifySessionToken(
   token: string,
 ): Promise<AuthSessionPayload> {
   const { payload } = await jwtVerify(token, getEncodedJwtSecret());
   if (
     typeof payload.id !== "string" ||
+    typeof payload.jti !== "string" ||
+    payload.jti.length === 0 ||
     (payload.role !== "Investor" &&
       payload.role !== "Developer" &&
       payload.role !== "Admin")
