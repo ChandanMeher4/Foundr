@@ -1,4 +1,5 @@
 import type { Job, Queue } from "bullmq";
+import { invalidateMarketplaceCache } from "../src/lib/cache";
 import dbConnect from "../src/lib/db";
 import { sendAppEmail } from "../src/lib/email";
 import { cleanupLegacyOtpFields } from "../src/lib/otp";
@@ -259,6 +260,8 @@ export async function processLifecycleJob(job: Job): Promise<unknown> {
       if (updateRes.modifiedCount === 0) {
         return { noOp: true, reason: "concurrent_state_change" };
       }
+
+      await invalidateMarketplaceCache();
 
       const dev = project.developerName as
         | { name?: string; email?: string }

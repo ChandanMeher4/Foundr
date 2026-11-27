@@ -3,18 +3,86 @@ import dbConnect from "@/lib/db";
 import Project from "@/models/Project";
 import "@/models/User";
 import { requireRole } from "@/lib/auth";
+import {
+  MARKETPLACE_CACHE_TTL_SECONDS,
+  MARKETPLACE_PROJECTS_CACHE_KEY,
+  getJson,
+  isCacheDisabled,
+  setJson,
+} from "@/lib/cache";
 import { scheduleReviewReminder } from "@/lib/queue";
+import { getTrendingProjectScores } from "@/lib/trending";
 
-export async function GET() {
+interface MarketplaceProjectRecord {
+  _id: { toString(): string } | string;
+  status: string;
+  [key: string]: unknown;
+}
+
+export async function GET(req?: Request) {
   try {
-    await dbConnect();
+    const sort = req ? new URL(req.url).searchParams.get("sort") : null;
+    const cacheDisabled = isCacheDisabled();
+    let xCache: "HIT" | "MISS" | "BYPASS" = cacheDisabled ? "BYPASS" : "MISS";
 
-    const projects = await Project.find({ status: { $in: ["Live", "Funded"] } })
-      .populate("developerName", "name")
-      .sort({ createdAt: -1 })
-      .lean();
+    let projects: MarketplaceProjectRecord[] | null = null;
+    if (!cacheDisabled) {
+      projects = await getJson<MarketplaceProjectRecord[]>(
+        MARKETPLACE_PROJECTS_CACHE_KEY,
+      );
+      if (projects !== null) {
+        xCache = "HIT";
+      }
+    }
 
-    return NextResponse.json(projects);
+    if (projects === null) {
+      await dbConnect();
+      projects = (await Project.find({ status: { $in: ["Live", "Funded"] } })
+        .populate("developerName", "name")
+        .sort({ createdAt: -1 })
+        .lean()) as unknown as MarketplaceProjectRecord[];
+
+      if (!cacheDisabled) {
+        await setJson(
+          MARKETPLACE_PROJECTS_CACHE_KEY,
+          projects,
+          MARKETPLACE_CACHE_TTL_SECONDS,
+        );
+      }
+    }
+
+    if (sort === "trending") {
+      const liveProjects = projects.filter((p) => p.status === "Live");
+      const trendingScores = await getTrendingProjectScores();
+      const scoreMap = new Map(
+        trendingScores.map((entry) => [entry.projectId, entry.score]),
+      );
+
+      const scored: MarketplaceProjectRecord[] = [];
+      const unscored: MarketplaceProjectRecord[] = [];
+
+      for (const project of liveProjects) {
+        const score = scoreMap.get(String(project._id)) ?? 0;
+        if (score > 0) {
+          scored.push({ ...project, trendingScore: score });
+        } else {
+          unscored.push(project);
+        }
+      }
+
+      scored.sort(
+        (a, b) =>
+          Number(b.trendingScore ?? 0) - Number(a.trendingScore ?? 0),
+      );
+
+      return NextResponse.json([...scored, ...unscored], {
+        headers: { "X-Cache": xCache },
+      });
+    }
+
+    return NextResponse.json(projects, {
+      headers: { "X-Cache": xCache },
+    });
   } catch (error: unknown) {
     const details = error instanceof Error ? error.message : "Unknown error";
     console.error("Fetch Marketplace Data Error:", details);

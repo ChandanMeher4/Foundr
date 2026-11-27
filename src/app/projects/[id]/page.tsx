@@ -6,6 +6,7 @@ import StarButton from "@/components/StarButton";
 import ImageCarousel from "@/components/ImageCarousel";
 import LiveFundingProgress from "@/components/LiveFundingProgress";
 import AiCopilot from "@/components/AiCopilot";
+import ProjectViewBeacon from "@/components/ProjectViewBeacon";
 import { getSession } from "@/lib/auth";
 import { getUserStarredIds } from "@/lib/stars";
 import "@/models/User";
@@ -41,6 +42,9 @@ export default async function ProjectDetailsPage({
 
   return (
     <div className="min-h-screen bg-stone-50">
+      {project.status === "Live" && (
+        <ProjectViewBeacon projectId={project._id.toString()} />
+      )}
       <div className="py-10 max-w-6xl mx-auto px-6">
 
         {/* Back link */}
@@ -113,7 +117,7 @@ export default async function ProjectDetailsPage({
                 />
               </div>
             </div>
-            <AiCopilot project={JSON.parse(JSON.stringify(project))} />
+            <AiCopilot projectId={project._id.toString()} />
           </div>
 
           {/* ── Right Column: Investment Dashboard ───────────────── */}

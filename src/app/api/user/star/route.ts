@@ -4,6 +4,7 @@ import dbConnect from "@/lib/db";
 import User from "@/models/User";
 import { requireRole } from "@/lib/auth";
 import { getUserStarredIds } from "@/lib/stars";
+import { recordTrendingEvent } from "@/lib/trending";
 
 export async function GET() {
   try {
@@ -54,6 +55,14 @@ export async function POST(req: Request) {
     }
 
     await user.save();
+
+    if (!isAlreadyStarred) {
+      await recordTrendingEvent({
+        type: "star",
+        projectId,
+        viewerKey: auth.session.id,
+      });
+    }
 
     return NextResponse.json({
       isStarred: !isAlreadyStarred,

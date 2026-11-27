@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import dbConnect from "@/lib/db";
 import Project from "@/models/Project";
 import { requireRole } from "@/lib/auth";
+import { invalidateMarketplaceCache } from "@/lib/cache";
 import { cancelLifecycleJobs } from "@/lib/queue";
 
 export async function DELETE(
@@ -25,6 +26,8 @@ export async function DELETE(
     if (!deletedProject) {
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
     }
+
+    await invalidateMarketplaceCache();
 
     if (process.env.REDIS_URL) {
       try {

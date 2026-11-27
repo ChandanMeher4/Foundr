@@ -42,6 +42,7 @@ export interface IProject {
   status: "Pending Review" | "Live" | "Funded" | "Rejected" | "Expired" | string;
   isVerified?: boolean;
   approvedAt?: string | Date;
+  trendingScore?: number;
 
   investors?: IProjectInvestor[];
 }

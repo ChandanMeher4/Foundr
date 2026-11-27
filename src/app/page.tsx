@@ -8,30 +8,57 @@ import type { IProject } from "@/types";
 export default function Marketplace() {
   const [projects, setProjects] = useState<IProject[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isSorting, setIsSorting] = useState(false);
 
   // UI State
   const [viewMode, setViewMode] = useState<"list" | "map">("list");
+  const [sortMode, setSortMode] = useState<"newest" | "trending">("newest");
 
   // RESTORED: Search & Filter State
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("All");
 
   useEffect(() => {
+    let cancelled = false;
     const fetchProjects = async () => {
       try {
-        const res = await fetch("/api/projects");
-        if (res.ok) {
-          const data = await res.json();
+        const endpoint =
+          sortMode === "trending" ? "/api/projects?sort=trending" : "/api/projects";
+        const res = await fetch(endpoint);
+        if (!cancelled && res.ok) {
+          const data = (await res.json()) as IProject[];
           setProjects(data);
         }
       } catch (error) {
         console.error("Failed to fetch projects:", error);
       } finally {
-        setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          setIsSorting(false);
+        }
       }
     };
-    fetchProjects();
-  }, []);
+    void fetchProjects();
+    return () => {
+      cancelled = true;
+    };
+  }, [sortMode]);
+
+  const handleSortChange = (nextSort: "newest" | "trending") => {
+    if (nextSort === sortMode) return;
+    setIsSorting(true);
+    setSortMode(nextSort);
+  };
+
+  const topTrendingIds =
+    sortMode === "trending"
+      ? new Set(
+          projects
+            .filter((p) => (p.trendingScore ?? 0) > 0)
+            .slice(0, 3)
+            .map((p) => p._id),
+        )
+      : new Set<string>();
 
   // THE FILTER ENGINE: This runs instantly every time a user types or changes a dropdown
   const filteredProjects = projects.filter((project) => {
@@ -138,6 +165,32 @@ export default function Marketplace() {
             </svg>
           </div>
 
+          {/* Newest / Trending Sort Toggle */}
+          <div className="bg-white border border-stone-200 p-1 rounded-xl flex items-center shrink-0 shadow-sm">
+            <button
+              type="button"
+              onClick={() => handleSortChange("newest")}
+              className={`px-5 py-2.5 rounded-lg text-xs font-bold tracking-widest uppercase transition-all ${
+                sortMode === "newest"
+                  ? "bg-stone-900 text-amber-400 shadow"
+                  : "text-stone-500 hover:text-stone-900"
+              }`}
+            >
+              Newest
+            </button>
+            <button
+              type="button"
+              onClick={() => handleSortChange("trending")}
+              className={`px-5 py-2.5 rounded-lg text-xs font-bold tracking-widest uppercase transition-all ${
+                sortMode === "trending"
+                  ? "bg-stone-900 text-amber-400 shadow"
+                  : "text-stone-500 hover:text-stone-900"
+              }`}
+            >
+              Trending
+            </button>
+          </div>
+
           {/* List / Map Toggle */}
           <div className="bg-stone-900 p-1 rounded-xl flex items-center shrink-0 shadow-md">
             <button
@@ -167,6 +220,7 @@ export default function Marketplace() {
         {viewMode === "list" && (
           <p className="text-xs text-stone-400 font-semibold tracking-widest uppercase mb-6">
             {filteredProjects.length} {filteredProjects.length === 1 ? "Property" : "Properties"} Found
+            {isSorting ? " · Updating..." : ""}
           </p>
         )}
 
@@ -217,12 +271,19 @@ export default function Marketplace() {
                       <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent" />
 
                       {/* Category Badge & Status */}
-                      <div className="absolute top-4 left-4 flex items-center gap-2">
+                      <div className="absolute top-4 left-4 flex items-center gap-2 flex-wrap">
                         <div className="bg-stone-900/90 backdrop-blur-sm px-3 py-1 rounded-full">
                           <span className="text-[10px] font-bold text-amber-400 tracking-widest uppercase">
                             {project.category}
                           </span>
                         </div>
+                        {topTrendingIds.has(project._id) && (
+                          <div className="bg-amber-400 text-stone-900 px-2.5 py-1 rounded-full shadow-md flex items-center">
+                            <span className="text-[10px] font-black tracking-widest uppercase">
+                              Trending
+                            </span>
+                          </div>
+                        )}
                         {project.status === "Funded" && (
                           <div className="bg-emerald-600 text-white px-2.5 py-1 rounded-full shadow-md flex items-center gap-1">
                             <span className="text-[10px] font-black tracking-widest uppercase">

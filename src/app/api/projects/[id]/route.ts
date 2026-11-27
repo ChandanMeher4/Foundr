@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import dbConnect from "@/lib/db";
 import Project from "@/models/Project";
 import { requireRole } from "@/lib/auth";
+import { invalidateMarketplaceCache } from "@/lib/cache";
 import { cancelLifecycleJobs, scheduleExpireListing } from "@/lib/queue";
 
 const ALLOWED_STATUSES = [
@@ -63,6 +64,8 @@ export async function PATCH(
     if (!updatedProject) {
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
     }
+
+    await invalidateMarketplaceCache();
 
     if (process.env.REDIS_URL && body.status !== undefined) {
       try {

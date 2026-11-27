@@ -5,6 +5,7 @@ import dbConnect from "@/lib/db";
 import Project from "@/models/Project";
 import User from "@/models/User";
 import { requireRole } from "@/lib/auth";
+import { invalidateMarketplaceCache } from "@/lib/cache";
 import {
   getRedisConnection,
   getRedisKeyPrefix,
@@ -12,6 +13,7 @@ import {
 } from "@/lib/redis";
 import { cancelLifecycleJobs, enqueueInvestmentFlow } from "@/lib/queue";
 import { getClientIp, rateLimit, rateLimitResponse } from "@/lib/rate-limit";
+import { recordTrendingEvent } from "@/lib/trending";
 
 const IDEMPOTENCY_PROCESSING_TTL = 30;
 const IDEMPOTENCY_DONE_TTL = 86400;
@@ -228,6 +230,7 @@ export async function POST(
               { $set: { status: "Funded" } },
             );
             priorProject.status = "Funded";
+            await invalidateMarketplaceCache();
           }
 
           const replayBody = {
@@ -319,6 +322,13 @@ export async function POST(
       );
       updatedProject.status = "Funded";
     }
+
+    await invalidateMarketplaceCache();
+    await recordTrendingEvent({
+      type: "invest",
+      projectId,
+      viewerKey: investorId,
+    });
 
     const responseBody = {
       message: "Commitment secured successfully!",

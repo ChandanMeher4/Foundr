@@ -21,7 +21,7 @@ Screenshots are being prepared under [docs/screenshots/](docs/screenshots/README
 
 | Role | Capabilities |
 | :--- | :--- |
-| **Investor** | Browse live & funded properties in List or interactive India Leaflet Map view; search by address/title & filter by category; view real-time SSE funding progress bars; run AI Pros/Risks reports; star/bookmark opportunities; commit fractional INR amounts idempotently |
+| **Investor** | Browse live & funded properties in List or interactive India Leaflet Map view; switch between `Newest` and `Trending` views (top-3 badged); search by address/title & filter by category; view real-time SSE funding progress bars; run cached AI Pros/Risks reports; star/bookmark opportunities; commit fractional INR amounts idempotently |
 | **Developer** | Submit new early-stage properties via `/list-project` with Geoapify India address autocomplete and Cloudinary image uploads; monitor portfolio capital raised and investor commitment ledgers on `/developer` |
 | **Admin** | Approve/verify (`Live`, sets `approvedAt`) or reject/delete `Pending Review` listings on `/admin`; inspect weekly `PlatformStats` snapshots; revoke all active sessions for a user; access the isolated cross-domain Bull Board queue dashboard |
 
@@ -39,14 +39,15 @@ flowchart TD
     Browser -.->|Cross-origin SSE GET /projects/:id/stream| WorkerSSE["Render Worker SSE Endpoint"]
 
     Next -->|Mongoose atomic $expr + AuditLog| Mongo[("MongoDB Atlas")]
-    Next -->|Idempotency, Lua rate limits, revocation, BullMQ| Redis[("Redis Cloud TCP (noeviction)")]
-    Next -->|AI analysis| Groq["Groq LPU (openai/gpt-oss-120b)"]
+    Next -->|Idempotency, caches, trending ZSETs, rate limits, BullMQ| Redis[("Redis Cloud TCP (noeviction)")]
+    Next -->|AI analysis (cached 24h + global limiter)| Groq["Groq LPU (openai/gpt-oss-120b)"]
     Next -->|OTP sandbox email| Resend["Resend API"]
     Next -->|60s Admin handoff JWT -> /admin/queues/login| WorkerBoard["Render Bull Board (bullboard_session cookie)"]
 
     Redis -->|Queues: investment-events, lifecycle, scheduled| WorkerBull["Render BullMQ Workers"]
     Redis -->|psubscribe funding:*| WorkerSSE
-    WorkerBull -->|AuditLog upsert & listing lifecycle| Mongo
+    WorkerBull -->|AuditLog upsert, expiry & cache invalidation| Mongo
+    WorkerBull -->|Invalidate marketplace cache on expiry| Redis
     WorkerBull -->|Receipts, digests & reminders| Resend
     WorkerBoard -->|Inspects queues & schedulers| Redis
 ```
@@ -106,6 +107,10 @@ sequenceDiagram
 | **Token Revocation & Cross-Domain Bull Board** | Mandatory JWT `jti`, `revoked:{jti}` on logout, `tokensValidAfter` on role change/revoke-all, single-use `60s` Bull Board handoff | Legacy no-`jti` JWTs fail verification; logout & `POST /api/admin/users/[id]/revoke-sessions` & role mutation invalidate tokens immediately | [tests/phase2.test.ts](tests/phase2.test.ts) |
 | **Delayed Lifecycle & `Asia/Kolkata` Crons** | `lifecycle` (`expire-listing`, `review-reminder`) + `scheduled` (`daily-digest`, `nightly-cleanup`, `weekly-stats`) queues | Stale `approvedAt` / funded deals no-op safely; repeated `registerScheduledJobs` produces `3` deduplicated schedulers; cleanup keeps `AuditLog` intact | [tests/phase2.test.ts](tests/phase2.test.ts) |
 | **Bookmark Persistence Across Reloads** | `GET /api/user/star` + server-hydrated `initialStarred` (`React.cache(getSession)`), logged-out redirect to `/login` | Unauthenticated `GET`/`POST` return `401`; toggling persists in MongoDB across reloads; revoked sessions return `401` | [tests/star.test.ts](tests/star.test.ts) |
+| **Marketplace Redis Read Cache (`60s`)** | Versioned `cache:v1:marketplace:projects` (`EX 60`), `CACHE_DISABLED` bypass & cross-process invalidation (`invest`, `PATCH`, `DELETE`, worker `expire-listing`) | Local `npm start` against remote Atlas & Redis Cloud (`15` reqs/pass): cold `BYPASS` (`p50=85.87 ms`, `p95=1455.44 ms`) vs. warm `HIT` (`p50=47.82 ms`, `p95=88.49 ms`; `15/16` `HIT` after `1` `MISS`, `0.938` hit ratio) | [tools/bench-cache.mjs](tools/bench-cache.mjs) |
+| **AI Copilot Cache (`24h`)** | SHA-256 `cache:v1:ai:{id}:{hash}` (`EX 86400`) checked before per-IP & global rate limits | Local `npm start` against remote Atlas, Redis Cloud & Groq: `MISS` (`1657.34 ms`, HTTP `200`) vs. `HIT` (`107.12 ms`, HTTP `200`); HIT skips Groq and consumes `0` IP limit budget | [tools/bench-cache.mjs](tools/bench-cache.mjs) & [tests/phase3a.test.ts](tests/phase3a.test.ts) |
+| **Authoritative AI, Single-Flight & Global Limiter** | Server loads DB fields (`404` non-owner pending), `<project_data>` delimiters, `groq:global` (`30/60s`), `ai:lock` `SET NX EX 30` | Forged request title/valuation ignored; `6` concurrent identical misses coalesce within documented bound (`<= 2` calls, `4+` poll HITs); `31st` miss returns `429` + `Retry-After` | [tests/phase3a.test.ts](tests/phase3a.test.ts) |
+| **Deduplicated 7-Day Trending Leaderboard** | Post-mount view beacon (`+1`), AI (`+2`), star add (`+3`) deduped via `SET NX EX 86400`, real invest (`+5`), lazy `ZUNIONSTORE WEIGHTS 7..1` | Duplicate same-day events, star removals & idempotent replays add `0`; `>7d` buckets and non-`Live` listings excluded; daily keys keep `<=8d` TTL | [tests/phase3a.test.ts](tests/phase3a.test.ts) |
 | **Production Worker Dependency Hygiene** | Runtime `tsx` + static AST import scan before deploy (`npm ci --omit=dev`) | Fails build if `worker/` or transitive `src/` imports depend on any `devDependencies` package | [tools/check-worker-deps.mjs](tools/check-worker-deps.mjs) |
 
 ---
@@ -159,13 +164,15 @@ npm run build
 Foundr deploys cleanly without Docker across four managed services (see [.github/workflows/ci.yml](.github/workflows/ci.yml) and [.env.example](.env.example)):
 
 1. **Vercel (Next.js Web App):** Standard Next.js build (`npm run build`).
-   - Env vars: `MONGODB_URI`, `REDIS_URL`, `JWT_SECRET`, `GROQ_API_KEY`, `RESEND_API_KEY`, `EMAIL_MODE`, `ADMIN_EMAIL`, `OTP_LOGIN_ENABLED`, `NEXT_PUBLIC_OTP_LOGIN_ENABLED`, `NEXT_PUBLIC_WORKER_URL`, `NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME`, `NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET`, `NEXT_PUBLIC_GEOAPIFY_KEY`.
+   - Env vars: `MONGODB_URI`, `REDIS_URL`, `JWT_SECRET`, `GROQ_API_KEY`, `RESEND_API_KEY`, `EMAIL_MODE`, `ADMIN_EMAIL`, `OTP_LOGIN_ENABLED`, `NEXT_PUBLIC_OTP_LOGIN_ENABLED`, `NEXT_PUBLIC_WORKER_URL`, `NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME`, `NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET`, `NEXT_PUBLIC_GEOAPIFY_KEY`, plus optional `CACHE_DISABLED`.
 2. **Render (Persistent `/worker` Node Service):**
    - Build command: `npm ci --omit=dev`
    - Start command: `npm run worker`
-   - Env vars: `MONGODB_URI`, `REDIS_URL`, `JWT_SECRET` *(identical to Vercel)*, `RESEND_API_KEY`, `EMAIL_MODE`, `ADMIN_EMAIL`, `FRONTEND_ORIGIN` *(e.g., `https://foundr-gamma.vercel.app`)*.
+   - Env vars: `MONGODB_URI`, `REDIS_URL`, `JWT_SECRET` *(identical to Vercel)*, `RESEND_API_KEY`, `EMAIL_MODE`, `ADMIN_EMAIL`, `FRONTEND_ORIGIN` *(e.g., `https://foundr-gamma.vercel.app`)*, plus optional `CACHE_DISABLED`.
 3. **Redis Cloud (Free Tier TCP):** Configured with `maxmemory-policy noeviction`; Next.js uses one shared singleton connection per instance and `/worker` keeps low connection concurrency.
 4. **MongoDB Atlas:** Hosts `projects` (`2dsphere` index), `users`, `auditlogs`, and `platform_stats`.
+
+> **Deploy Coordination Note:** Both Vercel and the Render `/worker` must redeploy together for Phase 3A so `/worker` (`expire-listing`) shares marketplace cache invalidation and `POST /api/ai/analyze` matches the `{ projectId }` client contract. No new required env vars (`CACHE_DISABLED` defaults off).
 
 ---
 
@@ -195,7 +202,7 @@ Use either dedicated dummy demo account below to evaluate [foundr-gamma.vercel.a
 - **Razorpay Test-Mode Checkout:** Atomic capacity reservation at checkout with delayed BullMQ expiration release + HMAC-verified webhook queue & dead-letter handling
 - **Validation & Contracts:** Request/response Zod schemas and OpenAPI specs (`/api/docs`)
 - **Observability:** Structured `pino` logging (`requestId` correlated into BullMQ jobs), Sentry error tracking, `/api/health`, Admin-gated `/api/metrics`, and targeted Playwright E2E coverage
-- **Caching & Analytics:** Marketplace read cache (`60s`), `Project`-backed AI response cache (`24h`), and deduplicated 7-day trending rankings (`ZINCRBY` / `ZUNIONSTORE`)
+- **Receipts (Deferred):** Investment PDF receipts generated inside the existing `confirm-investor` BullMQ job and persisted in MongoDB
 
 ---
 

@@ -2,14 +2,8 @@
 
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
-import type { IProject } from "@/types";
 
-type AiProjectInput = Pick<
-  IProject,
-  "title" | "description" | "location" | "minInvestment" | "totalValuation"
->;
-
-export default function AiCopilot({ project }: { project: AiProjectInput }) {
+export default function AiCopilot({ projectId }: { projectId: string }) {
   const [analysis, setAnalysis] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
@@ -22,18 +16,22 @@ export default function AiCopilot({ project }: { project: AiProjectInput }) {
       const res = await fetch("/api/ai/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: project.title,
-          description: project.description,
-          location: project.location,
-          minInvestment: project.minInvestment,
-          totalValuation: project.totalValuation,
-        }),
+        body: JSON.stringify({ projectId }),
       });
+
+      if (res.status === 429) {
+        const data = (await res.json().catch(() => ({}))) as {
+          retryAfterSeconds?: number;
+        };
+        const retryAfter =
+          res.headers.get("Retry-After") || data.retryAfterSeconds || "60";
+        setError(`Too many requests. Try again in ${retryAfter} seconds.`);
+        return;
+      }
 
       if (!res.ok) throw new Error("Failed to fetch AI analysis");
 
-      const data = await res.json();
+      const data = (await res.json()) as { analysis: string };
       setAnalysis(data.analysis);
     } catch {
       setError("AI Copilot is currently unavailable.");
