@@ -508,6 +508,7 @@ describe("Phase 2: Rate Limiting, OTP Hardening, Revocation & Jobs", () => {
       expect(ids).toEqual([
         "daily-digest-scheduler",
         "nightly-cleanup-scheduler",
+        "payments-reaper-scheduler",
         "weekly-stats-scheduler",
       ]);
 

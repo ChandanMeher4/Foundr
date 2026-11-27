@@ -8,6 +8,7 @@ import LiveFundingProgress from "@/components/LiveFundingProgress";
 import AiCopilot from "@/components/AiCopilot";
 import ProjectViewBeacon from "@/components/ProjectViewBeacon";
 import { getSession } from "@/lib/auth";
+import { isPaymentsEnabled } from "@/lib/razorpay";
 import { getUserStarredIds } from "@/lib/stars";
 import "@/models/User";
 import type { IProject } from "@/types";
@@ -180,9 +181,11 @@ export default async function ProjectDetailsPage({
                 <LiveFundingProgress
                   projectId={project._id.toString()}
                   initialFunding={project.currentFunding || 0}
+                  reservedFunding={project.reservedFunding || 0}
                   totalValuation={project.totalValuation}
                   minInvestment={project.minInvestment}
                   initialStatus={project.status}
+                  paymentsEnabled={isPaymentsEnabled()}
                 />
 
               </div>

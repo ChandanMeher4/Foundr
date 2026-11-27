@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import type { IDeadLetterItem } from "@/types";
 
 interface AdminProjectItem {
   _id: string;
@@ -29,14 +30,17 @@ interface PlatformStatsSnapshot {
 export default function AdminDashboardClient() {
   const [projects, setProjects] = useState<AdminProjectItem[]>([]);
   const [stats, setStats] = useState<PlatformStatsSnapshot | null>(null);
+  const [deadLetters, setDeadLetters] = useState<IDeadLetterItem[]>([]);
+  const [busyDlqId, setBusyDlqId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const fetchAdminData = async () => {
       try {
-        const [projRes, statsRes] = await Promise.all([
+        const [projRes, statsRes, dlqRes] = await Promise.all([
           fetch("/api/admin/projects"),
           fetch("/api/admin/stats"),
+          fetch("/api/admin/dead-letters"),
         ]);
         if (projRes.ok) {
           const data = (await projRes.json()) as AdminProjectItem[];
@@ -48,6 +52,12 @@ export default function AdminDashboardClient() {
           };
           setStats(statsData.stats ?? null);
         }
+        if (dlqRes.ok) {
+          const dlqData = (await dlqRes.json()) as {
+            deadLetters?: IDeadLetterItem[];
+          };
+          setDeadLetters(dlqData.deadLetters ?? []);
+        }
       } catch (error) {
         console.error("Failed to fetch admin data", error);
       } finally {
@@ -56,6 +66,28 @@ export default function AdminDashboardClient() {
     };
     fetchAdminData();
   }, []);
+
+  const handleDeadLetterAction = async (
+    id: string,
+    action: "replay" | "discard",
+  ) => {
+    setBusyDlqId(id);
+    try {
+      const res = await fetch(`/api/admin/dead-letters/${id}/${action}`, {
+        method: "POST",
+      });
+      if (res.ok) {
+        setDeadLetters((prev) => prev.filter((item) => item._id !== id));
+      } else {
+        const err = (await res.json().catch(() => ({}))) as { error?: string };
+        alert(err.error || `Failed to ${action} dead letter`);
+      }
+    } catch {
+      alert(`Failed to ${action} dead letter`);
+    } finally {
+      setBusyDlqId(null);
+    }
+  };
 
   const handleApprove = async (id: string) => {
     try {
@@ -195,6 +227,70 @@ export default function AdminDashboardClient() {
               <p className="text-lg font-black text-stone-900">{stats?.newUsersLast7Days ?? "—"}</p>
             </div>
           </div>
+        </div>
+
+        {/* ── Dead Letters Card ─────────────────────────────────── */}
+        <div className="bg-white rounded-2xl border border-stone-200 shadow-sm px-6 py-4 mb-8">
+          <div className="flex items-center justify-between gap-2 mb-3">
+            <p className="text-[10px] font-bold text-stone-500 tracking-[0.25em] uppercase">
+              Dead Letters
+            </p>
+            <span
+              className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border ${
+                deadLetters.length > 0
+                  ? "bg-red-50 text-red-700 border-red-200"
+                  : "bg-stone-100 text-stone-500 border-stone-200"
+              }`}
+            >
+              {deadLetters.length} Open
+            </span>
+          </div>
+
+          {deadLetters.length === 0 ? (
+            <p className="text-xs text-stone-400">
+              No permanently failed payment jobs in the MongoDB dead-letter store.
+            </p>
+          ) : (
+            <div className="space-y-2.5">
+              {deadLetters.map((item) => (
+                <div
+                  key={item._id}
+                  className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-stone-50 border border-stone-200 rounded-xl px-4 py-3"
+                >
+                  <div className="min-w-0">
+                    <p className="text-xs font-black text-stone-900">
+                      {item.jobName}{" "}
+                      <span className="font-mono text-[10px] text-stone-500">
+                        ({item.jobId})
+                      </span>
+                    </p>
+                    <p className="text-[11px] text-red-600 truncate mt-0.5">
+                      {item.error}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      disabled={busyDlqId === item._id}
+                      onClick={() => handleDeadLetterAction(item._id, "replay")}
+                      className="bg-stone-900 hover:bg-emerald-600 text-white text-[10px] font-bold px-3.5 py-1.5 rounded-lg uppercase tracking-wider transition-colors disabled:opacity-50"
+                    >
+                      Replay
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busyDlqId === item._id}
+                      onClick={() => handleDeadLetterAction(item._id, "discard")}
+                      className="bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 text-[10px] font-bold px-3.5 py-1.5 rounded-lg uppercase tracking-wider transition-colors disabled:opacity-50"
+                    >
+                      Discard
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* ── Project List ──────────────────────────────────────── */}

@@ -10,10 +10,12 @@ import { ExpressAdapter } from "@bull-board/express";
 import {
   processInvestmentJob,
   processLifecycleJob,
+  processPaymentsJob,
   processScheduledJob,
 } from "./processors";
 import dbConnect from "../src/lib/db";
 import { cleanupLegacyOtpFields } from "../src/lib/otp";
+import { recordPaymentsDeadLetter } from "../src/lib/payments";
 import Project from "../src/models/Project";
 import {
   BULLBOARD_COOKIE_NAME,
@@ -25,6 +27,7 @@ import {
 import {
   INVESTMENT_EVENTS_QUEUE,
   LIFECYCLE_QUEUE,
+  PAYMENTS_QUEUE,
   SCHEDULED_QUEUE,
   getBullPrefix,
 } from "../src/lib/queue";
@@ -164,17 +167,23 @@ export async function registerScheduledJobs(
     { pattern: "0 9 * * 1", tz: "Asia/Kolkata" },
     { name: "weekly-stats", data: {} },
   );
+  await scheduledQueue.upsertJobScheduler(
+    "payments-reaper-scheduler",
+    { pattern: "*/5 * * * *", tz: "Asia/Kolkata" },
+    { name: "payments-reaper", data: {} },
+  );
 }
 
 async function main() {
   // Connection budget (Redis Cloud 30-conn free tier):
   // - commandRedis: shared across health, config/clients checks, Queues & Bull Board
-  // - 3 Worker connections: one per BullMQ Worker (investment-events, lifecycle, scheduled)
+  // - 4 Worker connections: investment-events, lifecycle, scheduled, payments
   // - subRedis: single psubscribe('funding:*') multiplexing all SSE clients
   const commandRedis = createRedis("cmd");
   const investWorkerRedis = createRedis("worker-invest");
   const lifecycleWorkerRedis = createRedis("worker-lifecycle");
   const scheduledWorkerRedis = createRedis("worker-scheduled");
+  const paymentsWorkerRedis = createRedis("worker-payments");
   const subRedis = createRedis("sub");
 
   const evictionPolicy = await verifyEvictionPolicy(commandRedis);
@@ -202,7 +211,13 @@ async function main() {
   const investmentQueue = new Queue(INVESTMENT_EVENTS_QUEUE, queueOpts);
   const lifecycleQueue = new Queue(LIFECYCLE_QUEUE, queueOpts);
   const scheduledQueue = new Queue(SCHEDULED_QUEUE, queueOpts);
-  const allQueues = [investmentQueue, lifecycleQueue, scheduledQueue];
+  const paymentsQueue = new Queue(PAYMENTS_QUEUE, queueOpts);
+  const allQueues = [
+    investmentQueue,
+    lifecycleQueue,
+    scheduledQueue,
+    paymentsQueue,
+  ];
 
   await registerScheduledJobs(scheduledQueue);
 
@@ -236,7 +251,17 @@ async function main() {
     },
   );
 
-  for (const w of [worker, lifecycleWorker, scheduledWorker]) {
+  const paymentsWorker = new Worker(
+    PAYMENTS_QUEUE,
+    async (job) => processPaymentsJob(job),
+    {
+      connection: paymentsWorkerRedis as unknown as ConnectionOptions,
+      concurrency: 2,
+      ...(bullPrefix ? { prefix: bullPrefix } : {}),
+    },
+  );
+
+  for (const w of [worker, lifecycleWorker, scheduledWorker, paymentsWorker]) {
     w.on("completed", (job) => {
       console.log(`[Worker:${w.name}] Completed ${job.name} (${job.id})`);
     });
@@ -247,6 +272,13 @@ async function main() {
       );
     });
   }
+
+  paymentsWorker.on("failed", (job, err) => {
+    if (!job) return;
+    void recordPaymentsDeadLetter(job, err).catch((dlqErr) => {
+      console.error("[DLQ Write Error]:", dlqErr);
+    });
+  });
 
   // Single subscriber fan-out map for public SSE funding progress streams
   const sseClients = new Map<string, Set<Response>>();
@@ -281,31 +313,43 @@ async function main() {
         ),
       ]);
       if (pong !== "PONG") throw new Error(`Unexpected ping response: ${pong}`);
-      const [connectedClients, investCounts, lifecycleCounts, scheduledCounts] =
-        await Promise.all([
-          getConnectedClients(commandRedis),
-          investmentQueue.getJobCounts(
-            "wait",
-            "active",
-            "delayed",
-            "failed",
-            "completed",
-          ),
-          lifecycleQueue.getJobCounts(
-            "wait",
-            "active",
-            "delayed",
-            "failed",
-            "completed",
-          ),
-          scheduledQueue.getJobCounts(
-            "wait",
-            "active",
-            "delayed",
-            "failed",
-            "completed",
-          ),
-        ]);
+      const [
+        connectedClients,
+        investCounts,
+        lifecycleCounts,
+        scheduledCounts,
+        paymentsCounts,
+      ] = await Promise.all([
+        getConnectedClients(commandRedis),
+        investmentQueue.getJobCounts(
+          "wait",
+          "active",
+          "delayed",
+          "failed",
+          "completed",
+        ),
+        lifecycleQueue.getJobCounts(
+          "wait",
+          "active",
+          "delayed",
+          "failed",
+          "completed",
+        ),
+        scheduledQueue.getJobCounts(
+          "wait",
+          "active",
+          "delayed",
+          "failed",
+          "completed",
+        ),
+        paymentsQueue.getJobCounts(
+          "wait",
+          "active",
+          "delayed",
+          "failed",
+          "completed",
+        ),
+      ]);
       res.status(200).json({
         status: "ok",
         redis: "connected",
@@ -315,6 +359,7 @@ async function main() {
           [INVESTMENT_EVENTS_QUEUE]: investCounts,
           [LIFECYCLE_QUEUE]: lifecycleCounts,
           [SCHEDULED_QUEUE]: scheduledCounts,
+          [PAYMENTS_QUEUE]: paymentsCounts,
         },
         uptimeSeconds: Math.round(process.uptime()),
       });
@@ -441,6 +486,7 @@ async function main() {
       new BullMQAdapter(investmentQueue),
       new BullMQAdapter(lifecycleQueue),
       new BullMQAdapter(scheduledQueue),
+      new BullMQAdapter(paymentsQueue),
     ],
     serverAdapter,
   });
@@ -463,9 +509,11 @@ async function main() {
     await worker.close();
     await lifecycleWorker.close();
     await scheduledWorker.close();
+    await paymentsWorker.close();
     await investmentQueue.close();
     await lifecycleQueue.close();
     await scheduledQueue.close();
+    await paymentsQueue.close();
     await subRedis.quit();
     await commandRedis.quit();
     process.exit(0);

@@ -1,10 +1,12 @@
 import { FlowProducer, Queue } from "bullmq";
 import type { ConnectionOptions } from "bullmq";
+import { sanitizeJobIdSegment } from "./razorpay";
 import { getRedisConnection, getRedisKeyPrefix } from "./redis";
 
 export const INVESTMENT_EVENTS_QUEUE = "investment-events";
 export const LIFECYCLE_QUEUE = "lifecycle";
 export const SCHEDULED_QUEUE = "scheduled";
+export const PAYMENTS_QUEUE = "payments";
 
 export interface InvestmentJobPayload {
   investmentId: string;
@@ -33,6 +35,23 @@ export interface ReviewReminderPayload {
   projectId: string;
 }
 
+export interface ProcessWebhookPayload {
+  eventId: string;
+}
+
+export interface FinalizePaymentPayload {
+  reservationId?: string;
+  orderId?: string;
+  paymentId?: string;
+  amountPaise?: number;
+}
+
+export interface ReleaseReservationPayload {
+  projectId: string;
+  reservationId: string;
+  orderId?: string;
+}
+
 const DEFAULT_JOB_OPTS = {
   attempts: 5,
   backoff: {
@@ -48,6 +67,7 @@ type GlobalWithQueues = typeof globalThis & {
   __foundrFlowProducer?: FlowProducer;
   __foundrLifecycleQueue?: Queue;
   __foundrScheduledQueue?: Queue;
+  __foundrPaymentsQueue?: Queue;
 };
 
 function bullConnection(): ConnectionOptions {
@@ -123,6 +143,20 @@ export function getScheduledQueue(): Queue {
   return g.__foundrScheduledQueue;
 }
 
+/** Returns singleton BullMQ Queue for Razorpay payments, webhooks, and reservation releases. */
+export function getPaymentsQueue(): Queue {
+  const g = globalThis as GlobalWithQueues;
+  if (!g.__foundrPaymentsQueue) {
+    const prefix = getBullPrefix();
+    g.__foundrPaymentsQueue = new Queue(PAYMENTS_QUEUE, {
+      connection: bullConnection(),
+      defaultJobOptions: DEFAULT_JOB_OPTS,
+      ...(prefix ? { prefix } : {}),
+    });
+  }
+  return g.__foundrPaymentsQueue;
+}
+
 /** Returns singleton BullMQ FlowProducer sharing the single global Redis connection. */
 export function getInvestmentFlowProducer(): FlowProducer {
   const g = globalThis as GlobalWithQueues;
@@ -190,7 +224,7 @@ export async function enqueueInvestmentFlow(
   });
 }
 
-/** Removes any pending delayed lifecycle jobs (`expire-listing`, `review-reminder`) for a project. */
+/** Removes any pending delayed lifecycle jobs (`expire-listing`, `review-reminder`, deferred expires) for a project. */
 export async function cancelLifecycleJobs(projectId: string): Promise<void> {
   const queue = getLifecycleQueue();
   for (const jobId of [
@@ -208,6 +242,21 @@ export async function cancelLifecycleJobs(projectId: string): Promise<void> {
         err instanceof Error ? err.message : err,
       );
     }
+  }
+
+  try {
+    const delayed = await queue.getDelayed(0, 50);
+    for (const job of delayed) {
+      const data = job.data as { projectId?: string } | undefined;
+      if (job.name === "expire-listing" && data?.projectId === projectId) {
+        await job.remove().catch(() => {});
+      }
+    }
+  } catch (err) {
+    console.warn(
+      "[Lifecycle] Could not scan delayed deferred jobs:",
+      err instanceof Error ? err.message : err,
+    );
   }
 }
 
@@ -245,5 +294,56 @@ export async function scheduleExpireListing(
     ...DEFAULT_JOB_OPTS,
     delay: expireMs,
     jobId: getExpireListingJobId(payload.projectId),
+  });
+}
+
+/** Defers expire-listing when active reservations exist (uses unique jobId so active job doesn't deduplicate it). */
+export async function deferExpireListing(
+  payload: ExpireListingPayload,
+  delayMs: number,
+): Promise<void> {
+  const queue = getLifecycleQueue();
+  await queue.add("expire-listing", payload, {
+    ...DEFAULT_JOB_OPTS,
+    delay: Math.max(1000, delayMs),
+    jobId: `expire_${sanitizeJobIdSegment(payload.projectId)}_defer_${Date.now()}`,
+  });
+}
+
+/** Enqueues webhook processing onto the `payments` queue cleanly without colons in jobId. */
+export async function enqueuePaymentWebhook(eventId: string): Promise<void> {
+  const queue = getPaymentsQueue();
+  await queue.add(
+    "process-webhook",
+    { eventId } satisfies ProcessWebhookPayload,
+    {
+      ...DEFAULT_JOB_OPTS,
+      jobId: `webhook_${sanitizeJobIdSegment(eventId)}`,
+    },
+  );
+}
+
+/** Enqueues idempotent payment finalization onto the `payments` queue. */
+export async function enqueuePaymentFinalize(
+  payload: FinalizePaymentPayload,
+): Promise<void> {
+  const queue = getPaymentsQueue();
+  const key = payload.reservationId || payload.orderId || String(Date.now());
+  await queue.add("finalize-payment", payload, {
+    ...DEFAULT_JOB_OPTS,
+    jobId: `finalize_${sanitizeJobIdSegment(key)}`,
+  });
+}
+
+/** Enqueues delayed reservation expiry check (`reservation_{reservationId}`). */
+export async function enqueueReleaseReservation(
+  payload: ReleaseReservationPayload,
+  delayMs: number,
+): Promise<void> {
+  const queue = getPaymentsQueue();
+  await queue.add("release-reservation", payload, {
+    ...DEFAULT_JOB_OPTS,
+    delay: Math.max(1000, delayMs),
+    jobId: `reservation_${sanitizeJobIdSegment(payload.reservationId)}`,
   });
 }

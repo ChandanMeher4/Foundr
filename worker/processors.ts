@@ -3,11 +3,23 @@ import { invalidateMarketplaceCache } from "../src/lib/cache";
 import dbConnect from "../src/lib/db";
 import { sendAppEmail } from "../src/lib/email";
 import { cleanupLegacyOtpFields } from "../src/lib/otp";
-import type {
-  ExpireListingPayload,
-  InvestmentJobPayload,
-  ReviewReminderPayload,
+import {
+  finalizePayment,
+  processWebhookEventById,
+  releaseReservation,
+  runPaymentsReaperSweep,
+} from "../src/lib/payments";
+import {
+  PAYMENTS_QUEUE,
+  deferExpireListing,
+  type ExpireListingPayload,
+  type FinalizePaymentPayload,
+  type InvestmentJobPayload,
+  type ProcessWebhookPayload,
+  type ReleaseReservationPayload,
+  type ReviewReminderPayload,
 } from "../src/lib/queue";
+import { getReservationTtlMs } from "../src/lib/razorpay";
 import AuditLog from "../src/models/AuditLog";
 import PlatformStats from "../src/models/PlatformStats";
 import Project from "../src/models/Project";
@@ -247,17 +259,55 @@ export async function processLifecycleJob(job: Job): Promise<unknown> {
         return { noOp: true, reason: "approvedAt_mismatch" };
       }
 
+      if ((project.reservedFunding || 0) > 0) {
+        await deferExpireListing(
+          {
+            projectId,
+            approvedAt: new Date(project.approvedAt).toISOString(),
+          },
+          getReservationTtlMs(),
+        );
+        return {
+          deferred: true,
+          reason: "active_reservations",
+          reservedFunding: project.reservedFunding,
+        };
+      }
+
       const updateRes = await Project.updateOne(
         {
           _id: projectId,
           status: "Live",
           approvedAt: new Date(approvedAt),
           currentFunding: { $lt: project.totalValuation },
+          reservedFunding: { $not: { $gt: 0 } },
         },
         { $set: { status: "Expired" } },
       );
 
       if (updateRes.modifiedCount === 0) {
+        const latest = await Project.findById(projectId)
+          .select("reservedFunding status approvedAt")
+          .lean<{ reservedFunding?: number; status?: string; approvedAt?: Date } | null>();
+        if (
+          latest &&
+          latest.status === "Live" &&
+          (latest.reservedFunding || 0) > 0 &&
+          latest.approvedAt
+        ) {
+          await deferExpireListing(
+            {
+              projectId,
+              approvedAt: new Date(latest.approvedAt).toISOString(),
+            },
+            getReservationTtlMs(),
+          );
+          return {
+            deferred: true,
+            reason: "concurrent_reservation",
+            reservedFunding: latest.reservedFunding,
+          };
+        }
         return { noOp: true, reason: "concurrent_state_change" };
       }
 
@@ -528,7 +578,35 @@ export async function processScheduledJob(
       };
     }
 
+    case "payments-reaper": {
+      const targetPaymentsQueue =
+        allQueues.find((q) => q.name === PAYMENTS_QUEUE) || scheduledQueue;
+      return runPaymentsReaperSweep(targetPaymentsQueue);
+    }
+
     default:
       throw new Error(`Unknown scheduled job name: ${job.name}`);
+  }
+}
+
+export async function processPaymentsJob(job: Job): Promise<unknown> {
+  switch (job.name) {
+    case "process-webhook": {
+      const { eventId } = job.data as ProcessWebhookPayload;
+      return processWebhookEventById(eventId);
+    }
+
+    case "finalize-payment": {
+      const data = job.data as FinalizePaymentPayload;
+      return finalizePayment(data);
+    }
+
+    case "release-reservation": {
+      const data = job.data as ReleaseReservationPayload;
+      return releaseReservation(data);
+    }
+
+    default:
+      throw new Error(`Unknown payment job name: ${job.name}`);
   }
 }

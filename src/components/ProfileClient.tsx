@@ -1,9 +1,10 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
 import ProjectCard from "@/components/ProjectCard";
 import AddressAutocomplete from "@/components/AddressAutocomplete";
-import type { IProject, IUser } from "@/types";
+import type { IPaymentSummary, IProject, IUser } from "@/types";
 
 interface ProfileUser extends Omit<IUser, "starredProjects"> {
   starredProjects?: IProject[];
@@ -11,6 +12,7 @@ interface ProfileUser extends Omit<IUser, "starredProjects"> {
 
 export default function ProfileClient() {
   const [user, setUser] = useState<ProfileUser | null>(null);
+  const [payments, setPayments] = useState<IPaymentSummary[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isUpdating, setIsUpdating] = useState(false);
   const [message, setMessage] = useState({ text: "", type: "" });
@@ -21,9 +23,13 @@ export default function ProfileClient() {
       try {
         const res = await fetch("/api/user/profile");
         if (res.ok) {
-          const data = await res.json();
+          const data = (await res.json()) as {
+            user: ProfileUser;
+            payments?: IPaymentSummary[];
+          };
           setUser(data.user);
-          setSelectedCity(data.user.city);
+          setPayments(Array.isArray(data.payments) ? data.payments : []);
+          setSelectedCity(data.user.city || "");
         } else {
           setMessage({ text: "Failed to load profile.", type: "error" });
         }
@@ -226,6 +232,80 @@ export default function ProfileClient() {
               <div className="text-4xl mb-4">⭐</div>
               <p className="text-stone-900 font-bold text-base mb-1">No starred projects yet</p>
               <p className="text-stone-400 text-sm">Browse the marketplace and star opportunities you&apos;re interested in.</p>
+            </div>
+          )}
+        </div>
+
+        {/* ── Payment & Commitment History ──────────────────────── */}
+        <div>
+          <div className="flex flex-wrap items-baseline justify-between gap-3 mb-6">
+            <h3
+              className="text-2xl font-black text-stone-900 tracking-tight"
+              style={{ fontFamily: "'Georgia', serif" }}
+            >
+              Payment History
+            </h3>
+            <span className="text-[10px] font-bold text-stone-500 uppercase tracking-widest">
+              Test mode - no real money
+            </span>
+          </div>
+
+          {payments.length > 0 ? (
+            <div className="bg-white border border-stone-200 rounded-2xl divide-y divide-stone-100 shadow-sm overflow-hidden">
+              {payments.map((payment) => {
+                const projObj =
+                  typeof payment.projectId === "object" && payment.projectId !== null
+                    ? payment.projectId
+                    : null;
+                const amountRupees = Math.round(payment.amountPaise / 100);
+                const badgeStyle =
+                  payment.status === "captured"
+                    ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                    : payment.status === "refunded" || payment.status === "refund_pending"
+                    ? "bg-amber-50 text-amber-700 border-amber-200"
+                    : "bg-stone-100 text-stone-600 border-stone-300";
+
+                return (
+                  <div
+                    key={payment._id}
+                    className="px-6 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                  >
+                    <div>
+                      {projObj?._id ? (
+                        <Link
+                          href={`/projects/${projObj._id}`}
+                          className="text-sm font-black text-stone-900 hover:text-amber-600 transition-colors"
+                        >
+                          {projObj.title || "Property Commitment"}
+                        </Link>
+                      ) : (
+                        <p className="text-sm font-black text-stone-900">
+                          Property Commitment
+                        </p>
+                      )}
+                      <p className="text-[11px] text-stone-400 mt-0.5">
+                        Order: {payment.orderId}
+                        {payment.paymentId ? ` · Payment: ${payment.paymentId}` : ""}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <span className="text-sm font-black text-stone-900">
+                        ₹{amountRupees.toLocaleString("en-IN")}
+                      </span>
+                      <span
+                        className={`text-[10px] font-bold px-2.5 py-1 rounded-full border uppercase tracking-wider ${badgeStyle}`}
+                      >
+                        {payment.status.replace("_", " ")}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="bg-white rounded-2xl border border-stone-200 border-dashed px-6 py-8 text-center shadow-sm">
+              <p className="text-stone-500 text-xs">No Razorpay test-mode payments recorded yet.</p>
             </div>
           )}
         </div>

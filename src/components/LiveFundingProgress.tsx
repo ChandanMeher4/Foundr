@@ -15,15 +15,19 @@ interface FundingStreamPayload {
 export default function LiveFundingProgress({
   projectId,
   initialFunding,
+  reservedFunding = 0,
   totalValuation,
   minInvestment,
   initialStatus,
+  paymentsEnabled = false,
 }: {
   projectId: string;
   initialFunding: number;
+  reservedFunding?: number;
   totalValuation: number;
   minInvestment: number;
   initialStatus: string;
+  paymentsEnabled?: boolean;
 }) {
   const router = useRouter();
   const [currentFunding, setCurrentFunding] = useState(initialFunding);
@@ -106,6 +110,11 @@ export default function LiveFundingProgress({
             style={{ width: `${fundingPercentage}%` }}
           />
         </div>
+        {reservedFunding > 0 && !isFunded && !isExpired && (
+          <p className="text-[10px] text-amber-600 font-semibold mt-2">
+            ₹{reservedFunding.toLocaleString("en-IN")} temporarily held by active checkouts
+          </p>
+        )}
       </div>
 
       <div>
@@ -121,11 +130,13 @@ export default function LiveFundingProgress({
             projectId={projectId}
             minInvestment={minInvestment}
             isFunded={isFunded}
+            paymentsEnabled={paymentsEnabled}
           />
         )}
         <p className="text-[10px] text-center text-stone-400 mt-3 leading-relaxed">
-          Committing sends an inquiry to the developer.
-          No money is transferred yet.
+          {paymentsEnabled
+            ? "Test mode - no real money. Simulated fractional checkout only."
+            : "Committing sends an inquiry to the developer. No money is transferred yet."}
         </p>
       </div>
     </>

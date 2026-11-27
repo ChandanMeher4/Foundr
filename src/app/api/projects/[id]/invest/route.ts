@@ -13,6 +13,7 @@ import {
 } from "@/lib/redis";
 import { cancelLifecycleJobs, enqueueInvestmentFlow } from "@/lib/queue";
 import { getClientIp, rateLimit, rateLimitResponse } from "@/lib/rate-limit";
+import { isPaymentsEnabled } from "@/lib/razorpay";
 import { recordTrendingEvent } from "@/lib/trending";
 
 const IDEMPOTENCY_PROCESSING_TTL = 30;
@@ -42,6 +43,19 @@ export async function POST(
     if (auth.response) return auth.response;
 
     const investorId = auth.session.id;
+    const { id: projectId } = await params;
+
+    if (isPaymentsEnabled()) {
+      return NextResponse.json(
+        {
+          error:
+            "Direct investment commitments are disabled while test payments are active. Use checkout instead.",
+          checkoutEndpoint: `/api/projects/${projectId}/checkout`,
+        },
+        { status: 409 },
+      );
+    }
+
     const investLimit = await rateLimit({
       key: `invest:user:${investorId}`,
       limit: 10,
@@ -51,7 +65,6 @@ export async function POST(
       return rateLimitResponse(10, investLimit);
     }
 
-    const { id: projectId } = await params;
     if (!mongoose.Types.ObjectId.isValid(projectId)) {
       return NextResponse.json(
         { error: "Invalid project ID." },
@@ -61,9 +74,9 @@ export async function POST(
 
     const body = await req.json();
     const amount = Number(body.amount);
-    if (!Number.isFinite(amount) || amount <= 0) {
+    if (!Number.isSafeInteger(amount) || amount <= 0) {
       return NextResponse.json(
-        { error: "Commitment amount must be a positive number." },
+        { error: "Commitment amount must be a positive whole-rupee integer." },
         { status: 400 },
       );
     }
@@ -147,7 +160,16 @@ export async function POST(
       status: "Live",
       minInvestment: { $lte: amount },
       $expr: {
-        $lte: [{ $add: ["$currentFunding", amount] }, "$totalValuation"],
+        $lte: [
+          {
+            $add: [
+              { $ifNull: ["$currentFunding", 0] },
+              { $ifNull: ["$reservedFunding", 0] },
+              amount,
+            ],
+          },
+          "$totalValuation",
+        ],
       },
       ...(rawIdemKey
         ? {
@@ -264,8 +286,14 @@ export async function POST(
       if (acquiredLock && idemRedisKey && redis) await redis.del(idemRedisKey);
 
       const existing = await Project.findById(projectId)
-        .select("status currentFunding totalValuation minInvestment")
-        .lean();
+        .select("status currentFunding reservedFunding totalValuation minInvestment")
+        .lean<{
+          status: string;
+          currentFunding?: number;
+          reservedFunding?: number;
+          totalValuation: number;
+          minInvestment: number;
+        } | null>();
 
       if (!existing) {
         return NextResponse.json(
@@ -275,7 +303,7 @@ export async function POST(
       }
       if (
         existing.status === "Funded" ||
-        existing.currentFunding >= existing.totalValuation
+        (existing.currentFunding || 0) >= existing.totalValuation
       ) {
         return NextResponse.json(
           { error: "This opportunity is already fully funded." },
@@ -296,10 +324,19 @@ export async function POST(
           { status: 400 },
         );
       }
+      const reserved = existing.reservedFunding || 0;
       const remaining = Math.max(
         0,
-        existing.totalValuation - (existing.currentFunding || 0),
+        existing.totalValuation - (existing.currentFunding || 0) - reserved,
       );
+      if (reserved > 0 && (existing.currentFunding || 0) + amount <= existing.totalValuation) {
+        return NextResponse.json(
+          {
+            error: `Capacity is temporarily held by pending payments. Available allocation is ₹${remaining.toLocaleString("en-IN")}.`,
+          },
+          { status: 400 },
+        );
+      }
       return NextResponse.json(
         {
           error: `Commitment exceeds remaining allocation of ₹${remaining.toLocaleString("en-IN")}.`,

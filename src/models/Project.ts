@@ -30,6 +30,19 @@ const ProjectSchema = new Schema(
 
     fundingGoal: { type: Number, default: 0 },
     currentFunding: { type: Number, default: 0 },
+    reservedFunding: { type: Number, default: 0 },
+    reservations: [
+      {
+        reservationId: { type: String, required: true },
+        userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
+        amount: { type: Number, required: true },
+        idempotencyKey: { type: String, required: true },
+        razorpayOrderId: { type: String },
+        status: { type: String, enum: ["pending"], default: "pending" },
+        expiresAt: { type: Date, required: true },
+        createdAt: { type: Date, default: Date.now },
+      },
+    ],
     investors: [
       {
         userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
@@ -53,5 +66,6 @@ const ProjectSchema = new Schema(
 );
 
 ProjectSchema.index({ location: "2dsphere" });
+ProjectSchema.index({ "reservations.expiresAt": 1 });
 
 export default models.Project || model("Project", ProjectSchema);

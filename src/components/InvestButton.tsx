@@ -3,25 +3,120 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
+interface RazorpayHandlerResponse {
+  razorpay_payment_id: string;
+  razorpay_order_id: string;
+  razorpay_signature: string;
+}
+
+interface RazorpayModalOptions {
+  key: string;
+  amount: number;
+  currency: string;
+  order_id: string;
+  name: string;
+  description: string;
+  handler: (response: RazorpayHandlerResponse) => void;
+  modal?: {
+    ondismiss?: () => void;
+  };
+  theme?: {
+    color?: string;
+  };
+}
+
+interface RazorpayBrowserInstance {
+  open(): void;
+}
+
+type RazorpayConstructor = new (
+  options: RazorpayModalOptions,
+) => RazorpayBrowserInstance;
+
+declare global {
+  interface Window {
+    Razorpay?: RazorpayConstructor;
+  }
+}
+
+let razorpayScriptPromise: Promise<boolean> | null = null;
+
+function loadRazorpayCheckoutScript(): Promise<boolean> {
+  if (typeof window === "undefined") {
+    return Promise.resolve(false);
+  }
+  if (window.Razorpay) {
+    return Promise.resolve(true);
+  }
+  if (razorpayScriptPromise) {
+    return razorpayScriptPromise;
+  }
+
+  razorpayScriptPromise = new Promise((resolve) => {
+    const script = document.createElement("script");
+    script.src = "https://checkout.razorpay.com/v1/checkout.js";
+    script.async = true;
+    script.onload = () => resolve(Boolean(window.Razorpay));
+    script.onerror = () => {
+      razorpayScriptPromise = null;
+      resolve(false);
+    };
+    document.body.appendChild(script);
+  });
+
+  return razorpayScriptPromise;
+}
+
+async function pollPaymentUntilSettled(
+  reservationId: string,
+): Promise<{ status: string; lastError?: string }> {
+  for (let i = 0; i < 20; i++) {
+    const res = await fetch(`/api/payments/${reservationId}/status`, {
+      cache: "no-store",
+    });
+    if (res.ok) {
+      const data = (await res.json()) as {
+        status: string;
+        lastError?: string;
+      };
+      if (
+        data.status === "captured" ||
+        data.status === "refund_pending" ||
+        data.status === "refunded" ||
+        data.status === "failed" ||
+        data.status === "expired"
+      ) {
+        return data;
+      }
+    }
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  return { status: "authorized" };
+}
+
 export default function InvestButton({
   projectId,
   minInvestment,
   isFunded = false,
+  paymentsEnabled = false,
 }: {
   projectId: string;
   minInvestment: number;
   isFunded?: boolean;
+  paymentsEnabled?: boolean;
 }) {
   const router = useRouter();
   const [isOpen, setIsOpen] = useState(false);
   const [amount, setAmount] = useState<number | "">("");
   const [idempotencyKey, setIdempotencyKey] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [statusMessage, setStatusMessage] = useState("");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState(false);
 
   const openModal = () => {
     setError("");
+    setStatusMessage("");
     setSuccess(false);
     setIdempotencyKey(crypto.randomUUID());
     setIsOpen(true);
@@ -36,39 +131,191 @@ export default function InvestButton({
     setAmount(next);
   };
 
+  const handleDirectInvest = async () => {
+    const res = await fetch(`/api/projects/${projectId}/invest`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": idempotencyKey || crypto.randomUUID(),
+      },
+      body: JSON.stringify({ amount: Number(amount) }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (res.status === 429) {
+        const retryAfter =
+          res.headers.get("Retry-After") || data.retryAfterSeconds || "60";
+        throw new Error(`Too many attempts. Try again in ${retryAfter} seconds.`);
+      }
+      throw new Error(data.error || "Failed to process investment");
+    }
+    setSuccess(true);
+    setTimeout(() => {
+      setIsOpen(false);
+      router.refresh();
+    }, 2000);
+  };
+
+  const handleRazorpayCheckout = async () => {
+    const checkoutRes = await fetch(`/api/projects/${projectId}/checkout`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": idempotencyKey || crypto.randomUUID(),
+      },
+      body: JSON.stringify({ amount: Number(amount) }),
+    });
+
+    const data = (await checkoutRes.json().catch(() => ({}))) as {
+      error?: string;
+      retryAfterSeconds?: number;
+      orderId?: string;
+      amountPaise?: number;
+      currency?: string;
+      keyId?: string;
+      reservationId?: string;
+    };
+
+    if (!checkoutRes.ok) {
+      if (checkoutRes.status === 429) {
+        const retryAfter =
+          checkoutRes.headers.get("Retry-After") ||
+          data.retryAfterSeconds ||
+          "60";
+        throw new Error(`Too many attempts. Try again in ${retryAfter} seconds.`);
+      }
+      throw new Error(data.error || "Failed to start test checkout.");
+    }
+
+    if (
+      !data.orderId ||
+      !data.amountPaise ||
+      !data.keyId ||
+      !data.reservationId
+    ) {
+      throw new Error("Incomplete checkout response from server.");
+    }
+
+    const loaded = await loadRazorpayCheckoutScript();
+    if (!loaded || !window.Razorpay) {
+      throw new Error("Could not load Razorpay Checkout SDK.");
+    }
+
+    const reservationId = data.reservationId;
+    const keyId = data.keyId;
+
+    await new Promise<void>((resolve, reject) => {
+      const rzp = new window.Razorpay!({
+        key: keyId,
+        amount: data.amountPaise!,
+        currency: data.currency || "INR",
+        order_id: data.orderId!,
+        name: "Foundr (Test Mode)",
+        description: "Test mode - no real money",
+        theme: { color: "#1c1917" },
+        handler: async (response: RazorpayHandlerResponse) => {
+          try {
+            setStatusMessage("Verifying test payment signature...");
+            const verifyRes = await fetch("/api/payments/verify", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                orderId: response.razorpay_order_id,
+                paymentId: response.razorpay_payment_id,
+                signature: response.razorpay_signature,
+              }),
+            });
+
+            if (!verifyRes.ok) {
+              const vErr = (await verifyRes.json().catch(() => ({}))) as {
+                error?: string;
+              };
+              throw new Error(
+                vErr.error || "Payment signature verification failed.",
+              );
+            }
+
+            setStatusMessage("Confirming test commitment via worker...");
+            const settled = await pollPaymentUntilSettled(reservationId);
+            if (settled.status === "captured") {
+              setSuccess(true);
+              setStatusMessage("");
+              setTimeout(() => {
+                setIsOpen(false);
+                router.refresh();
+              }, 1800);
+              resolve();
+              return;
+            }
+            if (
+              settled.status === "refund_pending" ||
+              settled.status === "refunded"
+            ) {
+              reject(
+                new Error(
+                  "Reservation expired before capture and capacity filled; test refund initiated.",
+                ),
+              );
+              return;
+            }
+            if (settled.status === "failed" || settled.status === "expired") {
+              reject(
+                new Error(
+                  settled.lastError ||
+                    `Payment ended with status: ${settled.status}.`,
+                ),
+              );
+              return;
+            }
+            setSuccess(true);
+            setStatusMessage(
+              "Payment authorized; finalization continues in background worker.",
+            );
+            resolve();
+          } catch (err) {
+            reject(err);
+          }
+        },
+        modal: {
+          ondismiss: () => {
+            setStatusMessage("");
+            reject(
+              new Error(
+                "Checkout dismissed. Your temporary capacity reservation will expire automatically.",
+              ),
+            );
+          },
+        },
+      });
+      rzp.open();
+    });
+  };
+
   const handleInvest = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (Number(amount) < minInvestment) {
+    const numericAmount = Number(amount);
+    if (!Number.isInteger(numericAmount) || numericAmount <= 0) {
+      setError("Please enter a valid whole-rupee integer amount.");
+      return;
+    }
+    if (numericAmount < minInvestment) {
       setError(`Minimum investment is ₹${minInvestment.toLocaleString("en-IN")}`);
       return;
     }
     setIsSubmitting(true);
     setError("");
+    setStatusMessage("");
     try {
-      const res = await fetch(`/api/projects/${projectId}/invest`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Idempotency-Key": idempotencyKey || crypto.randomUUID(),
-        },
-        body: JSON.stringify({ amount: Number(amount) }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        if (res.status === 429) {
-          const retryAfter = res.headers.get("Retry-After") || data.retryAfterSeconds || "60";
-          throw new Error(`Too many attempts. Try again in ${retryAfter} seconds.`);
-        }
-        throw new Error(data.error || "Failed to process investment");
+      if (paymentsEnabled) {
+        await handleRazorpayCheckout();
+      } else {
+        await handleDirectInvest();
       }
-      setSuccess(true);
-      setTimeout(() => {
-        setIsOpen(false);
-        router.refresh();
-      }, 2000);
     } catch (err: unknown) {
       setError(
-        err instanceof Error ? err.message : "Something went wrong. Please try again.",
+        err instanceof Error
+          ? err.message
+          : "Something went wrong. Please try again.",
       );
     } finally {
       setIsSubmitting(false);
@@ -95,7 +342,7 @@ export default function InvestButton({
         onClick={openModal}
         className="w-full bg-stone-900 hover:bg-amber-400 text-white hover:text-stone-900 font-bold py-4 rounded-xl transition-all duration-200 shadow-md text-xs tracking-widest uppercase flex items-center justify-center gap-2 group"
       >
-        Commit to Invest
+        {paymentsEnabled ? "Proceed to Test Checkout" : "Commit to Invest"}
         <svg className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M17 8l4 4m0 0l-4 4m4-4H3" />
         </svg>
@@ -118,7 +365,7 @@ export default function InvestButton({
                 </button>
               )}
               <p className="text-[9px] font-bold text-amber-400 tracking-[0.4em] uppercase mb-1">
-                ◆ Investment
+                {paymentsEnabled ? "◆ Test mode - no real money" : "◆ Investment"}
               </p>
               <h3 className="text-xl font-black text-white" style={{ fontFamily: "'Georgia', serif" }}>
                 {success ? "Commitment Secured" : "Commitment Details"}
@@ -127,6 +374,12 @@ export default function InvestButton({
             </div>
 
             <div className="px-7 py-6">
+              {paymentsEnabled && (
+                <div className="bg-amber-50 border border-amber-200 text-amber-800 px-3.5 py-2 rounded-xl mb-4 text-[11px] font-bold tracking-wide">
+                  Test mode - no real money. Simulated Razorpay checkout only.
+                </div>
+              )}
+
               {success ? (
                 <div className="text-center py-4">
                   <div className="w-14 h-14 bg-emerald-50 border-2 border-emerald-200 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -134,7 +387,9 @@ export default function InvestButton({
                       <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
                     </svg>
                   </div>
-                  <p className="text-stone-500 text-sm">The developer will contact you shortly with the term sheet.</p>
+                  <p className="text-stone-500 text-sm">
+                    {statusMessage || "Your commitment has been recorded."}
+                  </p>
                 </div>
               ) : (
                 <>
@@ -142,6 +397,12 @@ export default function InvestButton({
                     Enter your commitment amount. Minimum required:{" "}
                     <span className="font-bold text-amber-600">₹{minInvestment.toLocaleString("en-IN")}</span>
                   </p>
+
+                  {statusMessage && (
+                    <div className="bg-stone-100 border border-stone-200 text-stone-700 px-4 py-3 rounded-xl mb-5 text-xs font-semibold">
+                      {statusMessage}
+                    </div>
+                  )}
 
                   {error && (
                     <div className="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl mb-5 text-xs font-semibold flex items-center gap-2">
@@ -162,6 +423,8 @@ export default function InvestButton({
                         <input
                           type="number"
                           required
+                          step={1}
+                          min={1}
                           value={amount}
                           onChange={(e) => handleAmountChange(e.target.value)}
                           className="w-full bg-stone-50 border border-stone-200 rounded-xl pl-8 pr-4 py-3 text-lg font-black text-stone-900 placeholder:text-stone-300 outline-none focus:ring-2 focus:ring-amber-400 focus:border-amber-400 transition-all"
@@ -178,7 +441,10 @@ export default function InvestButton({
                       {isSubmitting ? (
                         <><div className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin" /> Processing...</>
                       ) : (
-                        <>Confirm Commitment <svg className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M17 8l4 4m0 0l-4 4m4-4H3" /></svg></>
+                        <>
+                          {paymentsEnabled ? "Pay in Test Mode" : "Confirm Commitment"}
+                          <svg className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M17 8l4 4m0 0l-4 4m4-4H3" /></svg>
+                        </>
                       )}
                     </button>
                   </form>

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import dbConnect from "@/lib/db";
+import Payment from "@/models/Payment";
 import User from "@/models/User";
 import "@/models/Project";
 import { requireRole } from "@/lib/auth";
@@ -11,15 +12,20 @@ export async function GET() {
 
     await dbConnect();
 
-    const user = await User.findById(auth.session.id)
-      .populate("starredProjects")
-      .lean();
+    const [user, payments] = await Promise.all([
+      User.findById(auth.session.id).populate("starredProjects").lean(),
+      Payment.find({ userId: auth.session.id })
+        .populate("projectId", "title category status")
+        .sort({ createdAt: -1 })
+        .limit(50)
+        .lean(),
+    ]);
 
     if (!user) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
-    return NextResponse.json({ user });
+    return NextResponse.json({ user, payments });
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : "Unknown error";
     console.error("Profile GET Error:", msg);

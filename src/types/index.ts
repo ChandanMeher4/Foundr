@@ -12,6 +12,56 @@ export interface IProjectInvestor {
   idempotencyKey?: string;
 }
 
+export interface IProjectReservation {
+  _id?: string;
+  reservationId: string;
+  userId: string;
+  amount: number;
+  idempotencyKey: string;
+  razorpayOrderId?: string;
+  status: "pending";
+  expiresAt: string | Date;
+  createdAt?: string | Date;
+}
+
+export type PaymentStatus =
+  | "created"
+  | "authorized"
+  | "captured"
+  | "failed"
+  | "expired"
+  | "refund_pending"
+  | "refunded";
+
+export interface IPaymentSummary {
+  _id: string;
+  reservationId: string;
+  orderId: string;
+  paymentId?: string;
+  amountPaise: number;
+  currency?: string;
+  status: PaymentStatus;
+  createdAt?: string | Date;
+  projectId?:
+    | {
+        _id: string;
+        title?: string;
+        status?: string;
+        category?: string;
+      }
+    | string;
+}
+
+export interface IDeadLetterItem {
+  _id: string;
+  queue: string;
+  jobName: string;
+  jobId: string;
+  error: string;
+  failedAt: string | Date;
+  status: "open" | "replaying" | "replayed" | "discarded";
+}
+
 export interface IProject {
   _id: string;
   title: string;
@@ -38,6 +88,8 @@ export interface IProject {
   minInvestment: number;
   expectedCompletion: string | Date;
   currentFunding: number;
+  reservedFunding?: number;
+  reservations?: IProjectReservation[];
   imageUrls: string[];
   status: "Pending Review" | "Live" | "Funded" | "Rejected" | "Expired" | string;
   isVerified?: boolean;
