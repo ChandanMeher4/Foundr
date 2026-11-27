@@ -38,3 +38,5 @@ if (!resolvedDbName || !resolvedDbName.endsWith("_test")) {
 // Ensure tests never route outbound emails to external domains
 process.env.EMAIL_MODE = "sandbox";
 process.env.REDIS_KEY_PREFIX = "test:";
+// Default direct-invest mode unless a test explicitly enables Razorpay checkout
+process.env.PAYMENTS_ENABLED = "false";
