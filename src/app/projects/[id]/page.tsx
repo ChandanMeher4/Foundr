@@ -6,7 +6,10 @@ import StarButton from "@/components/StarButton";
 import ImageCarousel from "@/components/ImageCarousel";
 import LiveFundingProgress from "@/components/LiveFundingProgress";
 import AiCopilot from "@/components/AiCopilot";
+import { getSession } from "@/lib/auth";
+import { getUserStarredIds } from "@/lib/stars";
 import "@/models/User";
+import type { IProject } from "@/types";
 
 export default async function ProjectDetailsPage({
   params,
@@ -17,15 +20,24 @@ export default async function ProjectDetailsPage({
   const projectId = resolvedParams.id;
 
   await dbConnect();
-  const project = await Project.findById(projectId)
-    .populate("developerName", "name isVerifiedDeveloper")
-    .lean();
+  const [project, session] = await Promise.all([
+    Project.findById(projectId)
+      .populate("developerName", "name isVerifiedDeveloper")
+      .lean<IProject | null>(),
+    getSession(),
+  ]);
 
   if (!project) {
     notFound();
   }
 
-  const devName = project.developerName?.name || "Verified Developer";
+  const starredIds = session ? await getUserStarredIds(session.id) : null;
+  const initialStarred = Boolean(starredIds?.includes(projectId));
+
+  const devName =
+    typeof project.developerName === "object" && project.developerName !== null
+      ? project.developerName.name
+      : "Verified Developer";
 
   return (
     <div className="min-h-screen bg-stone-50">
@@ -94,7 +106,11 @@ export default async function ProjectDetailsPage({
               </p>
 
               <div className="mt-8">
-                <StarButton projectId={project._id.toString()} />
+                <StarButton
+                  projectId={project._id.toString()}
+                  initialStarred={initialStarred}
+                  isAuthenticated={Boolean(session)}
+                />
               </div>
             </div>
             <AiCopilot project={JSON.parse(JSON.stringify(project))} />

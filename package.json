@@ -8,7 +8,9 @@
     "dev:all": "concurrently -n WEB,WORKER -c cyan,yellow \"npm run dev\" \"npm run worker\"",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "check:worker-deps": "node tools/check-worker-deps.mjs",
     "test": "vitest run"
   },
   "dependencies": {
@@ -24,7 +26,7 @@
     "jose": "^6.1.3",
     "leaflet": "^1.9.4",
     "mongoose": "^9.2.3",
-    "next": "16.1.6",
+    "next": "16.4.6",
     "openai": "^6.27.0",
     "react": "19.2.3",
     "react-dom": "19.2.3",
@@ -45,7 +47,7 @@
     "babel-plugin-react-compiler": "1.0.0",
     "concurrently": "^10.0.7",
     "eslint": "^9",
-    "eslint-config-next": "16.1.6",
+    "eslint-config-next": "16.4.6",
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^4.1.12"

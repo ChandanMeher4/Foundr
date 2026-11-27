@@ -3,9 +3,14 @@
 import { useState, useEffect } from "react";
 import ProjectCard from "@/components/ProjectCard";
 import AddressAutocomplete from "@/components/AddressAutocomplete";
+import type { IProject, IUser } from "@/types";
+
+interface ProfileUser extends Omit<IUser, "starredProjects"> {
+  starredProjects?: IProject[];
+}
 
 export default function ProfileClient() {
-  const [user, setUser] = useState<any>(null);
+  const [user, setUser] = useState<ProfileUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isUpdating, setIsUpdating] = useState(false);
   const [message, setMessage] = useState({ text: "", type: "" });
@@ -22,7 +27,7 @@ export default function ProfileClient() {
         } else {
           setMessage({ text: "Failed to load profile.", type: "error" });
         }
-      } catch (error) {
+      } catch {
         setMessage({ text: "An unexpected error occurred.", type: "error" });
       } finally {
         setIsLoading(false);
@@ -48,7 +53,7 @@ export default function ProfileClient() {
       } else {
         setMessage({ text: "Failed to update location.", type: "error" });
       }
-    } catch (error) {
+    } catch {
       setMessage({ text: "An error occurred.", type: "error" });
     } finally {
       setIsUpdating(false);
@@ -203,16 +208,16 @@ export default function ProfileClient() {
             >
               Starred Opportunities
             </h3>
-            {user.starredProjects?.length > 0 && (
+            {(user.starredProjects?.length ?? 0) > 0 && (
               <span className="text-xs font-bold text-amber-600 bg-amber-50 border border-amber-200 px-2.5 py-0.5 rounded-full">
-                {user.starredProjects.length}
+                {user.starredProjects?.length}
               </span>
             )}
           </div>
 
           {user.starredProjects && user.starredProjects.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {user.starredProjects.map((project: any) => (
+              {user.starredProjects.map((project) => (
                 <ProjectCard key={project._id.toString()} project={project} />
               ))}
             </div>
@@ -220,7 +225,7 @@ export default function ProfileClient() {
             <div className="text-center py-16 bg-white rounded-2xl border border-stone-200 border-dashed shadow-sm">
               <div className="text-4xl mb-4">⭐</div>
               <p className="text-stone-900 font-bold text-base mb-1">No starred projects yet</p>
-              <p className="text-stone-400 text-sm">Browse the marketplace and star opportunities you're interested in.</p>
+              <p className="text-stone-400 text-sm">Browse the marketplace and star opportunities you&apos;re interested in.</p>
             </div>
           )}
         </div>

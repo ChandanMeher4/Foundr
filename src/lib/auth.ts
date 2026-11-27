@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import {
@@ -46,8 +47,11 @@ export async function clearSessionCookie(): Promise<void> {
   cookieStore.delete(AUTH_COOKIE_NAME);
 }
 
-/** Reads, verifies, and checks Redis revocation for the current session cookie, or returns null. */
-export async function getSession(): Promise<AuthSessionPayload | null> {
+/**
+ * Reads, verifies, and checks Redis revocation for the current session cookie, or returns null.
+ * Memoized per React server render via React.cache() so Navbar and page gates share one Redis check.
+ */
+export const getSession = cache(async (): Promise<AuthSessionPayload | null> => {
   const cookieStore = await cookies();
   const token = cookieStore.get(AUTH_COOKIE_NAME)?.value;
   if (!token) return null;
@@ -60,7 +64,7 @@ export async function getSession(): Promise<AuthSessionPayload | null> {
   } catch {
     return null;
   }
-}
+});
 
 type RoleAuthResult =
   | { session: AuthSessionPayload; response?: never }

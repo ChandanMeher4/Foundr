@@ -4,6 +4,7 @@ import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 import Link from "next/link";
+import type { IProject } from "@/types";
 
 const customIcon = L.icon({
   iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
@@ -15,7 +16,7 @@ const customIcon = L.icon({
   shadowSize: [41, 41],
 });
 
-export default function Map({ projects }: { projects: any[] }) {
+export default function Map({ projects }: { projects: IProject[] }) {
   const defaultCenter: [number, number] = [20.5937, 78.9629];
 
   return (

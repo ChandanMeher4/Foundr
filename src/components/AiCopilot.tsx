@@ -2,8 +2,14 @@
 
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
+import type { IProject } from "@/types";
 
-export default function AiCopilot({ project }: { project: any }) {
+type AiProjectInput = Pick<
+  IProject,
+  "title" | "description" | "location" | "minInvestment" | "totalValuation"
+>;
+
+export default function AiCopilot({ project }: { project: AiProjectInput }) {
   const [analysis, setAnalysis] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
@@ -16,7 +22,6 @@ export default function AiCopilot({ project }: { project: any }) {
       const res = await fetch("/api/ai/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        
         body: JSON.stringify({
           title: project.title,
           description: project.description,
@@ -30,7 +35,7 @@ export default function AiCopilot({ project }: { project: any }) {
 
       const data = await res.json();
       setAnalysis(data.analysis);
-    } catch (err) {
+    } catch {
       setError("AI Copilot is currently unavailable.");
     } finally {
       setIsLoading(false);
@@ -64,19 +69,15 @@ export default function AiCopilot({ project }: { project: any }) {
         <div className="mt-6 p-6 bg-white border border-stone-200 rounded-xl shadow-sm prose prose-stone max-w-none">
           <ReactMarkdown
             components={{
-              
-              strong: ({ node, ...props }) => (
-                <span
-                  className="block text-sm font-black text-stone-900 uppercase tracking-wider mb-2 mt-4 first:mt-0"
-                  {...props}
-                />
+              strong: ({ children }) => (
+                <span className="block text-sm font-black text-stone-900 uppercase tracking-wider mb-2 mt-4 first:mt-0">
+                  {children}
+                </span>
               ),
-              
-              li: ({ node, ...props }) => (
-                <li
-                  className="text-sm text-stone-600 mb-3 ml-4 list-disc marker:text-amber-500"
-                  {...props}
-                />
+              li: ({ children }) => (
+                <li className="text-sm text-stone-600 mb-3 ml-4 list-disc marker:text-amber-500">
+                  {children}
+                </li>
               ),
             }}
           >

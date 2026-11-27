@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand(\"ping\").ok' | grep -q 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping | grep -q PONG"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      MONGODB_URI: mongodb://localhost:27017/foundr_test
+      MONGODB_URI_TEST: mongodb://localhost:27017
+      MONGODB_DB_NAME: foundr_test
+      REDIS_URL: redis://localhost:6379
+      JWT_SECRET: ci-dummy-jwt-secret-key-at-least-32-chars
+      EMAIL_MODE: sandbox
+      ADMIN_EMAIL: ci-sandbox@example.com
+      OTP_LOGIN_ENABLED: "false"
+      NEXT_PUBLIC_OTP_LOGIN_ENABLED: "false"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Check worker runtime dependencies
+        run: npm run check:worker-deps
+
+      - name: Run integration test suite
+        run: npm test
+
+      - name: Build Next.js application
+        run: npm run build
+
+      - name: Audit production dependencies (critical only)
+        run: npm audit --omit=dev --audit-level=critical

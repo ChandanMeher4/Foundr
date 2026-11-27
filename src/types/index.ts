@@ -1,8 +1,29 @@
+export interface IProjectInvestor {
+  _id?: string;
+  userId:
+    | string
+    | {
+        _id: string;
+        name?: string;
+        email?: string;
+      };
+  amount: number;
+  date: string | Date;
+  idempotencyKey?: string;
+}
+
 export interface IProject {
   _id: string;
   title: string;
   description: string;
-  developerName?: { _id: string; name: string; email?: string } | string;
+  developerName?:
+    | {
+        _id: string;
+        name: string;
+        email?: string;
+        isVerifiedDeveloper?: boolean;
+      }
+    | string;
 
   location: {
     type: string;
@@ -22,12 +43,7 @@ export interface IProject {
   isVerified?: boolean;
   approvedAt?: string | Date;
 
-  investors?: {
-    userId: string;
-    amount: number;
-    date: string | Date;
-    idempotencyKey?: string;
-  }[];
+  investors?: IProjectInvestor[];
 }
 
 export interface IContact {
@@ -47,4 +63,5 @@ export interface IUser {
   companyName?: string;
   digestOptIn?: boolean;
   isVerifiedDeveloper?: boolean;
+  starredProjects?: IProject[] | string[];
 }

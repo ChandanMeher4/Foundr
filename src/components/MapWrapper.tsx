@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import type { IProject } from "@/types";
 
 const DynamicMap = dynamic(() => import("./Map"), {
   ssr: false,
@@ -12,6 +13,6 @@ const DynamicMap = dynamic(() => import("./Map"), {
   ),
 });
 
-export default function MapWrapper({ projects }: { projects: any[] }) {
+export default function MapWrapper({ projects }: { projects: IProject[] }) {
   return <DynamicMap projects={projects} />;
 }

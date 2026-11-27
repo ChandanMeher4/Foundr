@@ -41,7 +41,7 @@ export default function LoginPage() {
           setError(data.error || "Login failed");
         }
       }
-    } catch (err) {
+    } catch {
       setError("An unexpected error occurred.");
     } finally {
       setIsLoading(false);
@@ -72,7 +72,7 @@ export default function LoginPage() {
           setError(data.error || "Failed to send OTP.");
         }
       }
-    } catch (err) {
+    } catch {
       setError("An unexpected error occurred.");
     } finally {
       setIsLoading(false);
@@ -104,7 +104,7 @@ export default function LoginPage() {
           setError(data.error || "Invalid or expired OTP.");
         }
       }
-    } catch (err) {
+    } catch {
       setError("An unexpected error occurred.");
     } finally {
       setIsLoading(false);
@@ -251,7 +251,7 @@ export default function LoginPage() {
                     placeholder="000000"
                   />
                   <p className="text-[10px] text-stone-400 mt-2 text-center">
-                    Didn't receive it?{" "}
+                    Didn&apos;t receive it?{" "}
                     <button
                       type="button"
                       onClick={() => { setError(""); setMessage(""); setView("request_otp"); }}
@@ -276,7 +276,7 @@ export default function LoginPage() {
 
             {/* Footer */}
             <p className="mt-6 text-center text-xs text-stone-400 border-t border-stone-100 pt-6">
-              Don't have an account?{" "}
+              Don&apos;t have an account?{" "}
               <Link href="/register" className="text-amber-600 hover:text-amber-500 font-bold transition-colors">
                 Sign up
               </Link>

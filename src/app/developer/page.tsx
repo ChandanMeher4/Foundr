@@ -4,6 +4,7 @@ import Project from "@/models/Project";
 import "@/models/User";
 import Link from "next/link";
 import { getSession } from "@/lib/auth";
+import type { IProject, IProjectInvestor } from "@/types";
 
 export default async function DeveloperDashboard() {
   const payload = await getSession();
@@ -15,11 +16,11 @@ export default async function DeveloperDashboard() {
   const myProjects = await Project.find({ developerName: payload.id })
     .populate("investors.userId", "name email")
     .sort({ createdAt: -1 })
-    .lean();
+    .lean<IProject[]>();
 
-  const totalRaised = myProjects.reduce((sum: number, p: any) => sum + (p.currentFunding || 0), 0);
-  const totalInvestors = myProjects.reduce((sum: number, p: any) => sum + (p.investors?.length || 0), 0);
-  const liveCount = myProjects.filter((p: any) => p.status === "Live").length;
+  const totalRaised = myProjects.reduce((sum, p) => sum + (p.currentFunding || 0), 0);
+  const totalInvestors = myProjects.reduce((sum, p) => sum + (p.investors?.length || 0), 0);
+  const liveCount = myProjects.filter((p) => p.status === "Live").length;
 
   return (
     <div className="min-h-screen bg-stone-50">
@@ -79,7 +80,7 @@ export default async function DeveloperDashboard() {
               </Link>
             </div>
           ) : (
-            myProjects.map((project: any) => {
+            myProjects.map((project) => {
               const progress = Math.min((project.currentFunding / project.totalValuation) * 100, 100);
               return (
                 <div
@@ -172,25 +173,31 @@ export default async function DeveloperDashboard() {
                         <div className="mt-5 bg-stone-50 border border-stone-100 rounded-xl p-4">
                           <p className="text-[9px] font-bold text-stone-400 uppercase tracking-[0.2em] mb-3">Recent Commitments</p>
                           <div className="space-y-2">
-                            {project.investors.map((inv: any, idx: number) => (
-                              <div
-                                key={idx}
-                                className="flex justify-between items-center bg-white px-4 py-3 rounded-xl border border-stone-200"
-                              >
-                                <div className="flex items-center gap-3">
-                                  <div className="w-7 h-7 rounded-full bg-amber-400 text-stone-900 flex items-center justify-center text-[10px] font-black shrink-0">
-                                    {inv.userId?.name?.charAt(0)?.toUpperCase() || "?"}
+                            {project.investors.map((inv: IProjectInvestor, idx: number) => {
+                              const investorUser =
+                                typeof inv.userId === "object" && inv.userId !== null
+                                  ? inv.userId
+                                  : null;
+                              return (
+                                <div
+                                  key={idx}
+                                  className="flex justify-between items-center bg-white px-4 py-3 rounded-xl border border-stone-200"
+                                >
+                                  <div className="flex items-center gap-3">
+                                    <div className="w-7 h-7 rounded-full bg-amber-400 text-stone-900 flex items-center justify-center text-[10px] font-black shrink-0">
+                                      {investorUser?.name?.charAt(0)?.toUpperCase() || "?"}
+                                    </div>
+                                    <div>
+                                      <p className="text-xs font-bold text-stone-900">{investorUser?.name || "Unknown Investor"}</p>
+                                      <p className="text-[10px] text-stone-400">{investorUser?.email || "No email"}</p>
+                                    </div>
                                   </div>
-                                  <div>
-                                    <p className="text-xs font-bold text-stone-900">{inv.userId?.name || "Unknown Investor"}</p>
-                                    <p className="text-[10px] text-stone-400">{inv.userId?.email || "No email"}</p>
-                                  </div>
+                                  <span className="text-xs font-black text-emerald-600">
+                                    +₹{inv.amount.toLocaleString("en-IN")}
+                                  </span>
                                 </div>
-                                <span className="text-xs font-black text-emerald-600">
-                                  +₹{inv.amount.toLocaleString("en-IN")}
-                                </span>
-                              </div>
-                            ))}
+                              );
+                            })}
                           </div>
                         </div>
                       )}

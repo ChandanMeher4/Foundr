@@ -1,13 +1,71 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 
-export default function StarButton({ projectId }: { projectId: string }) {
+interface StarButtonProps {
+  projectId: string;
+  initialStarred?: boolean;
+  isAuthenticated?: boolean;
+}
+
+export default function StarButton({
+  projectId,
+  initialStarred,
+  isAuthenticated,
+}: StarButtonProps) {
+  const router = useRouter();
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState("");
-  const [starred, setStarred] = useState(false);
+  const [localState, setLocalState] = useState<{
+    projectId: string;
+    starred?: boolean;
+    authenticated?: boolean;
+  }>({ projectId });
+
+  const activeState = localState.projectId === projectId ? localState : undefined;
+  const starred = activeState?.starred ?? Boolean(initialStarred);
+  const authenticated = activeState?.authenticated ?? isAuthenticated;
+
+  useEffect(() => {
+    if (initialStarred !== undefined && isAuthenticated !== undefined) {
+      return;
+    }
+
+    let cancelled = false;
+    const loadStarredState = async () => {
+      try {
+        const res = await fetch("/api/user/star", { cache: "no-store" });
+        if (cancelled) return;
+        if (res.status === 401) {
+          setLocalState({ projectId, authenticated: false, starred: false });
+          return;
+        }
+        if (res.ok) {
+          const data = (await res.json()) as { starredIds?: string[] };
+          setLocalState({
+            projectId,
+            authenticated: true,
+            starred: Boolean(data.starredIds?.includes(projectId)),
+          });
+        }
+      } catch {
+        // Keep current visual fallback if hydration request fails
+      }
+    };
+
+    void loadStarredState();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, initialStarred, isAuthenticated]);
 
   const toggleStar = async () => {
+    if (authenticated === false) {
+      router.push("/login");
+      return;
+    }
+
     setIsLoading(true);
     setMessage("");
     try {
@@ -16,17 +74,27 @@ export default function StarButton({ projectId }: { projectId: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ projectId }),
       });
+      if (res.status === 401) {
+        setLocalState({ projectId, authenticated: false, starred: false });
+        router.push("/login");
+        return;
+      }
       if (res.ok) {
-        const data = await res.json();
+        const data = (await res.json()) as {
+          isStarred: boolean;
+          message: string;
+        };
+        setLocalState({
+          projectId,
+          authenticated: true,
+          starred: Boolean(data.isStarred),
+        });
         setMessage(data.message);
-        setStarred((prev) => !prev);
         setTimeout(() => setMessage(""), 3000);
-      } else if (res.status === 401) {
-        setMessage("Please log in to star projects.");
       } else {
         setMessage("Failed to update.");
       }
-    } catch (error) {
+    } catch {
       setMessage("An error occurred.");
     } finally {
       setIsLoading(false);

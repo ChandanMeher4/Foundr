@@ -3,9 +3,10 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import MapWrapper from "@/components/MapWrapper";
+import type { IProject } from "@/types";
 
 export default function Marketplace() {
-  const [projects, setProjects] = useState([]);
+  const [projects, setProjects] = useState<IProject[]>([]);
   const [loading, setLoading] = useState(true);
 
   // UI State
@@ -33,7 +34,7 @@ export default function Marketplace() {
   }, []);
 
   // THE FILTER ENGINE: This runs instantly every time a user types or changes a dropdown
-  const filteredProjects = projects.filter((project: any) => {
+  const filteredProjects = projects.filter((project) => {
     if (project.status === "Expired" || project.status === "Rejected" || project.status === "Pending Review") {
       return false;
     }
@@ -87,7 +88,7 @@ export default function Marketplace() {
             <span className="text-amber-400"> Opportunities</span>
           </h1>
           <p className="text-stone-400 text-base font-normal max-w-md">
-            Discover and invest in premium fractional real estate across India's fastest-growing markets.
+            Discover and invest in premium fractional real estate across India&apos;s fastest-growing markets.
           </p>
         </div>
       </div>
@@ -196,7 +197,7 @@ export default function Marketplace() {
               </div>
 
             ) : (
-              filteredProjects.map((project: any) => {
+              filteredProjects.map((project) => {
                 const progress = Math.min((project.currentFunding / project.totalValuation) * 100, 100) || 0;
 
                 return (

@@ -1,4 +1,4 @@
-import mongoose, { Schema, model, models } from "mongoose";
+import { Schema, model, models } from "mongoose";
 import { revokeAllUserSessions } from "../lib/revocation";
 
 const UserSchema = new Schema(

@@ -3,6 +3,25 @@ import mongoose from "mongoose";
 import dbConnect from "@/lib/db";
 import User from "@/models/User";
 import { requireRole } from "@/lib/auth";
+import { getUserStarredIds } from "@/lib/stars";
+
+export async function GET() {
+  try {
+    const auth = await requireRole();
+    if (auth.response) return auth.response;
+
+    const starredIds = await getUserStarredIds(auth.session.id);
+    if (starredIds === null) {
+      return NextResponse.json({ error: "User not found" }, { status: 404 });
+    }
+
+    return NextResponse.json({ starredIds });
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : "Unknown error";
+    console.error("Starred Fetch Error:", msg);
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+  }
+}
 
 export async function POST(req: Request) {
   try {
