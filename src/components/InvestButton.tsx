@@ -70,6 +70,7 @@ function loadRazorpayCheckoutScript(): Promise<boolean> {
 async function pollPaymentUntilSettled(
   reservationId: string,
 ): Promise<{ status: string; lastError?: string }> {
+  let lastStatus = "authorized";
   for (let i = 0; i < 20; i++) {
     const res = await fetch(`/api/payments/${reservationId}/status`, {
       cache: "no-store",
@@ -79,6 +80,9 @@ async function pollPaymentUntilSettled(
         status: string;
         lastError?: string;
       };
+      if (data.status) {
+        lastStatus = data.status;
+      }
       if (
         data.status === "captured" ||
         data.status === "refund_pending" ||
@@ -91,7 +95,7 @@ async function pollPaymentUntilSettled(
     }
     await new Promise((r) => setTimeout(r, 1500));
   }
-  return { status: "authorized" };
+  return { status: lastStatus };
 }
 
 export default function InvestButton({
@@ -111,12 +115,14 @@ export default function InvestButton({
   const [idempotencyKey, setIdempotencyKey] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
+  const [isConfirming, setIsConfirming] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState(false);
 
   const openModal = () => {
     setError("");
     setStatusMessage("");
+    setIsConfirming(false);
     setSuccess(false);
     setIdempotencyKey(crypto.randomUUID());
     setIsOpen(true);
@@ -267,9 +273,10 @@ export default function InvestButton({
               );
               return;
             }
+            setIsConfirming(true);
             setSuccess(true);
             setStatusMessage(
-              "Payment authorized; finalization continues in background worker.",
+              "Payment received - confirming (this can take a minute). Your investment will appear in your profile.",
             );
             resolve();
           } catch (err) {
@@ -305,6 +312,7 @@ export default function InvestButton({
     setIsSubmitting(true);
     setError("");
     setStatusMessage("");
+    setIsConfirming(false);
     try {
       if (paymentsEnabled) {
         await handleRazorpayCheckout();
@@ -353,10 +361,13 @@ export default function InvestButton({
           <div className="bg-white rounded-2xl overflow-hidden max-w-md w-full shadow-2xl">
             <div className="bg-stone-950 px-7 py-6 relative">
               <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-transparent via-amber-400 to-transparent" />
-              {!success && (
+              {(!success || isConfirming) && (
                 <button
                   title="back"
-                  onClick={() => setIsOpen(false)}
+                  onClick={() => {
+                    setIsOpen(false);
+                    if (isConfirming) router.refresh();
+                  }}
                   className="absolute top-4 right-4 w-7 h-7 rounded-full bg-stone-800 hover:bg-stone-700 text-stone-400 hover:text-white flex items-center justify-center transition-colors"
                 >
                   <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -368,7 +379,11 @@ export default function InvestButton({
                 {paymentsEnabled ? "◆ Test mode - no real money" : "◆ Investment"}
               </p>
               <h3 className="text-xl font-black text-white" style={{ fontFamily: "'Georgia', serif" }}>
-                {success ? "Commitment Secured" : "Commitment Details"}
+                {isConfirming
+                  ? "Payment Received"
+                  : success
+                    ? "Commitment Secured"
+                    : "Commitment Details"}
                 <span className="text-amber-400">.</span>
               </h3>
             </div>

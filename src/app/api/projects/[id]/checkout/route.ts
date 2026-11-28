@@ -310,6 +310,14 @@ export async function POST(
         amount: amountPaise,
         currency: "INR",
         receipt: reservationId,
+        payment: {
+          capture: "automatic",
+          capture_options: {
+            automatic_expiry_period: 12,
+            manual_expiry_period: 7200,
+            refund_speed: "optimum",
+          },
+        },
         notes: {
           projectId,
           userId,

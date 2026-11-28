@@ -48,6 +48,8 @@ import {
 } from "../src/lib/queue";
 import {
   type RazorpayClientLike,
+  type RazorpayOrderCreateInput,
+  type RazorpayPaymentEntity,
   setRazorpayClientForTest,
 } from "../src/lib/razorpay";
 import {
@@ -58,7 +60,11 @@ import {
   runPaymentsReaperSweep,
 } from "../src/lib/payments";
 import { registerScheduledJobs } from "../worker/index";
-import { processLifecycleJob, processScheduledJob } from "../worker/processors";
+import {
+  processLifecycleJob,
+  processPaymentsJob,
+  processScheduledJob,
+} from "../worker/processors";
 import User from "../src/models/User";
 import Project from "../src/models/Project";
 import Payment from "../src/models/Payment";
@@ -145,12 +151,27 @@ describe("Phase 4: Razorpay Test Mode Payments, Capacity Reservations & Mongo DL
   let investorToken = "";
   let otherInvestorToken = "";
 
-  let orderCreateCalls: Array<{ amount: number; receipt: string }> = [];
+  let orderCreateCalls: Array<{
+    amount: number;
+    receipt: string;
+    payment?: RazorpayOrderCreateInput["payment"];
+  }> = [];
   let refundCalls: Array<{ paymentId: string; amount?: number }> = [];
   let mockOrderOverrides = new Map<
     string,
-    { status: string; amount: number; items?: Array<{ id: string; status: string; amount: number }> }
+    {
+      status: string;
+      amount: number;
+      items?: Array<{
+        id: string;
+        order_id?: string;
+        status: string;
+        amount: number;
+        currency?: string;
+      }>;
+    }
   >();
+  let mockPaymentOverrides = new Map<string, RazorpayPaymentEntity>();
   let forceOrderCreateFail = false;
 
   function installDefaultRazorpayMock() {
@@ -166,6 +187,7 @@ describe("Phase 4: Razorpay Test Mode Payments, Capacity Reservations & Mongo DL
           orderCreateCalls.push({
             amount: params.amount,
             receipt: params.receipt,
+            payment: params.payment,
           });
           return {
             id: `order_mock_${orderSeq}_${crypto.randomBytes(3).toString("hex")}`,
@@ -200,6 +222,19 @@ describe("Phase 4: Razorpay Test Mode Payments, Capacity Reservations & Mongo DL
         },
       },
       payments: {
+        async fetch(paymentId) {
+          const override = mockPaymentOverrides.get(paymentId);
+          if (override) {
+            return override;
+          }
+          return {
+            id: paymentId,
+            order_id: "order_unknown",
+            status: "created",
+            amount: 0,
+            currency: "INR",
+          };
+        },
         async refund(paymentId, params) {
           refundSeq += 1;
           refundCalls.push({ paymentId, amount: params?.amount });
@@ -326,6 +361,7 @@ describe("Phase 4: Razorpay Test Mode Payments, Capacity Reservations & Mongo DL
     orderCreateCalls = [];
     refundCalls = [];
     mockOrderOverrides = new Map();
+    mockPaymentOverrides = new Map();
     forceOrderCreateFail = false;
     emailCalls.length = 0;
 
@@ -948,14 +984,23 @@ describe("Phase 4: Razorpay Test Mode Payments, Capacity Reservations & Mongo DL
       // 5. Retried payment.captured webhook transitions failed -> captured and commits capacity
       const capEvtId = `evt_cap_${crypto.randomBytes(4).toString("hex")}`;
       createdWebhookEventIds.push(capEvtId);
+      const retryPayId = `${mockPaymentId}_retry`;
+      mockPaymentOverrides.set(retryPayId, {
+        id: retryPayId,
+        order_id: orderId,
+        status: "captured",
+        amount: amountPaise,
+        currency: "INR",
+      });
       const capRaw = JSON.stringify({
         event: "payment.captured",
         payload: {
           payment: {
             entity: {
-              id: `${mockPaymentId}_retry`,
+              id: retryPayId,
               order_id: orderId,
               amount: amountPaise,
+              currency: "INR",
             },
           },
         },
@@ -1124,6 +1169,13 @@ describe("Phase 4: Razorpay Test Mode Payments, Capacity Reservations & Mongo DL
         amountPaise: number;
       };
 
+      mockPaymentOverrides.set("pay_cache_fin_1", {
+        id: "pay_cache_fin_1",
+        order_id: chk2.orderId,
+        status: "captured",
+        amount: chk2.amountPaise,
+        currency: "INR",
+      });
       const fin1 = await finalizePayment({
         reservationId: chk2.reservationId,
         orderId: chk2.orderId,
@@ -1203,7 +1255,22 @@ describe("Phase 4: Razorpay Test Mode Payments, Capacity Reservations & Mongo DL
       mockOrderOverrides.set(orderId, {
         status: "paid",
         amount: amountPaise,
-        items: [{ id: "pay_recovered_order_1", status: "captured", amount: amountPaise }],
+        items: [
+          {
+            id: "pay_recovered_order_1",
+            order_id: orderId,
+            status: "captured",
+            amount: amountPaise,
+            currency: "INR",
+          },
+        ],
+      });
+      mockPaymentOverrides.set("pay_recovered_order_1", {
+        id: "pay_recovered_order_1",
+        order_id: orderId,
+        status: "captured",
+        amount: amountPaise,
+        currency: "INR",
       });
 
       const relPaid = await releaseReservation({
@@ -1313,6 +1380,13 @@ describe("Phase 4: Razorpay Test Mode Payments, Capacity Reservations & Mongo DL
         orderId: chkA.orderId,
       });
 
+      mockPaymentOverrides.set("pay_late_win_1", {
+        id: "pay_late_win_1",
+        order_id: chkA.orderId,
+        status: "captured",
+        amount: chkA.amountPaise,
+        currency: "INR",
+      });
       const lateWin = await finalizePayment({
         reservationId: chkA.reservationId,
         orderId: chkA.orderId,
@@ -1363,6 +1437,13 @@ describe("Phase 4: Razorpay Test Mode Payments, Capacity Reservations & Mongo DL
       const refundEvtId = `evt_late_cap_${crypto.randomBytes(4).toString("hex")}`;
       createdWebhookEventIds.push(refundEvtId);
       const latePayId = `pay_late_ref_${crypto.randomBytes(3).toString("hex")}`;
+      mockPaymentOverrides.set(latePayId, {
+        id: latePayId,
+        order_id: chkB.orderId,
+        status: "captured",
+        amount: chkB.amountPaise,
+        currency: "INR",
+      });
       const lateCapRaw = JSON.stringify({
         event: "payment.captured",
         payload: {
@@ -1371,6 +1452,7 @@ describe("Phase 4: Razorpay Test Mode Payments, Capacity Reservations & Mongo DL
               id: latePayId,
               order_id: chkB.orderId,
               amount: chkB.amountPaise,
+              currency: "INR",
             },
           },
         },
@@ -1774,6 +1856,528 @@ describe("Phase 4: Razorpay Test Mode Payments, Capacity Reservations & Mongo DL
         );
         expect(rWh503.status).toBe(503);
       }
+    });
+  });
+
+  describe("Part 5: Capture Safety & Integrity Verification", () => {
+    it("passes auto-capture on order creation, waits on authorized-only verify until captured, rejects order.paid without capture, enforces integrity checks, and handles releaseReservation capture rules", async () => {
+      // Case A: Order creation passes automatic capture settings + authorized-only /verify waits
+      const projAId = await createTestProject();
+      const resA = await runWithToken(investorToken, () =>
+        checkoutPost(
+          new Request(`http://localhost/api/projects/${projAId}/checkout`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Idempotency-Key": `cap-auto-${crypto.randomBytes(4).toString("hex")}`,
+            },
+            body: JSON.stringify({ amount: 100_000 }),
+          }),
+          { params: Promise.resolve({ id: projAId }) },
+        ),
+      );
+      expect(resA.status).toBe(200);
+      const chkA = (await resA.json()) as {
+        orderId: string;
+        reservationId: string;
+        amountPaise: number;
+      };
+      const lastOrderCreate = orderCreateCalls.at(-1);
+      expect(lastOrderCreate?.payment).toEqual({
+        capture: "automatic",
+        capture_options: {
+          automatic_expiry_period: 12,
+          manual_expiry_period: 7200,
+          refund_speed: "optimum",
+        },
+      });
+
+      const payAuthId = `pay_auth_only_${crypto.randomBytes(3).toString("hex")}`;
+      mockPaymentOverrides.set(payAuthId, {
+        id: payAuthId,
+        order_id: chkA.orderId,
+        status: "authorized",
+        amount: chkA.amountPaise,
+        currency: "INR",
+      });
+
+      const verifyRes = await runWithToken(investorToken, () =>
+        paymentsVerifyPost(
+          new Request("http://localhost/api/payments/verify", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              orderId: chkA.orderId,
+              paymentId: payAuthId,
+              signature: signCheckoutPayload(chkA.orderId, payAuthId, TEST_KEY_SECRET),
+            }),
+          }),
+        ),
+      );
+      expect(verifyRes.status).toBe(200);
+
+      // Run the /verify-triggered finalize-payment job while payment is still only authorized
+      const verifyJobResult = await processPaymentsJob({
+        name: "finalize-payment",
+        data: {
+          reservationId: chkA.reservationId,
+          orderId: chkA.orderId,
+          paymentId: payAuthId,
+          source: "verify",
+        },
+      } as Job);
+      expect((verifyJobResult as { status: string }).status).toBe("awaiting_capture");
+
+      const projAfterVerify = await Project.findById(projAId).lean();
+      expect(projAfterVerify?.currentFunding).toBe(0);
+      expect(projAfterVerify?.reservedFunding).toBe(100_000);
+      expect(projAfterVerify?.reservations?.length).toBe(1);
+
+      const payAfterVerify = await Payment.findOne({
+        reservationId: chkA.reservationId,
+      }).lean();
+      expect(payAfterVerify?.status).toBe("authorized");
+
+      // Later Razorpay transitions payment to captured and delivers payment.captured webhook -> commits once
+      mockPaymentOverrides.set(payAuthId, {
+        id: payAuthId,
+        order_id: chkA.orderId,
+        status: "captured",
+        amount: chkA.amountPaise,
+        currency: "INR",
+      });
+
+      const capEvtId = `evt_auth_then_cap_${crypto.randomBytes(4).toString("hex")}`;
+      createdWebhookEventIds.push(capEvtId);
+      const capBody = JSON.stringify({
+        event: "payment.captured",
+        payload: {
+          payment: {
+            entity: {
+              id: payAuthId,
+              order_id: chkA.orderId,
+              amount: chkA.amountPaise,
+              currency: "INR",
+            },
+          },
+        },
+      });
+      const capWhRes = await webhooksPost(
+        new Request("http://localhost/api/webhooks/razorpay", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-razorpay-signature": signWebhookBody(capBody, TEST_WEBHOOK_SECRET),
+            "x-razorpay-event-id": capEvtId,
+          },
+          body: capBody,
+        }),
+      );
+      expect(capWhRes.status).toBe(200);
+      await processPaymentsJob({
+        name: "process-webhook",
+        data: { eventId: capEvtId },
+      } as Job);
+
+      const projAfterCap = await Project.findById(projAId).lean();
+      expect(projAfterCap?.currentFunding).toBe(100_000);
+      expect(projAfterCap?.reservedFunding).toBe(0);
+      expect(projAfterCap?.investors.length).toBe(1);
+      const payAfterCap = await Payment.findOne({
+        reservationId: chkA.reservationId,
+      }).lean();
+      expect(payAfterCap?.status).toBe("captured");
+
+      // Case B: order.paid webhook without a captured payment on the order does NOT commit
+      const projBId = await createTestProject();
+      const resB = await runWithToken(investorToken, () =>
+        checkoutPost(
+          new Request(`http://localhost/api/projects/${projBId}/checkout`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Idempotency-Key": `order-paid-nocap-${crypto.randomBytes(4).toString("hex")}`,
+            },
+            body: JSON.stringify({ amount: 100_000 }),
+          }),
+          { params: Promise.resolve({ id: projBId }) },
+        ),
+      );
+      const chkB = (await resB.json()) as {
+        orderId: string;
+        reservationId: string;
+        amountPaise: number;
+      };
+      const authOrderPayId = `pay_ord_auth_${crypto.randomBytes(3).toString("hex")}`;
+      mockOrderOverrides.set(chkB.orderId, {
+        status: "paid",
+        amount: chkB.amountPaise,
+        items: [
+          {
+            id: authOrderPayId,
+            order_id: chkB.orderId,
+            status: "authorized",
+            amount: chkB.amountPaise,
+            currency: "INR",
+          },
+        ],
+      });
+      mockPaymentOverrides.set(authOrderPayId, {
+        id: authOrderPayId,
+        order_id: chkB.orderId,
+        status: "authorized",
+        amount: chkB.amountPaise,
+        currency: "INR",
+      });
+
+      const orderPaidNoCapEvt = `evt_ord_nocap_${crypto.randomBytes(4).toString("hex")}`;
+      createdWebhookEventIds.push(orderPaidNoCapEvt);
+      const orderPaidNoCapBody = JSON.stringify({
+        event: "order.paid",
+        payload: {
+          order: { entity: { id: chkB.orderId, amount: chkB.amountPaise, currency: "INR" } },
+        },
+      });
+      await webhooksPost(
+        new Request("http://localhost/api/webhooks/razorpay", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-razorpay-signature": signWebhookBody(
+              orderPaidNoCapBody,
+              TEST_WEBHOOK_SECRET,
+            ),
+            "x-razorpay-event-id": orderPaidNoCapEvt,
+          },
+          body: orderPaidNoCapBody,
+        }),
+      );
+      const whOrderNoCapRes = (await processPaymentsJob({
+        name: "process-webhook",
+        data: { eventId: orderPaidNoCapEvt },
+      } as Job)) as { detail?: string };
+      expect(whOrderNoCapRes.detail).toBe("awaiting_capture");
+
+      const projBAfterOrderPaid = await Project.findById(projBId).lean();
+      expect(projBAfterOrderPaid?.currentFunding).toBe(0);
+      expect(projBAfterOrderPaid?.reservedFunding).toBe(100_000);
+
+      // Case C: Integrity mismatches (amount mismatch captured, amount mismatch authorized, currency mismatch, order_id mismatch)
+      // C1: Amount mismatch on captured payment -> no commit, AuditLog, Payment failed, single idempotent refund
+      const projAmtId = await createTestProject();
+      const resAmt = await runWithToken(investorToken, () =>
+        checkoutPost(
+          new Request(`http://localhost/api/projects/${projAmtId}/checkout`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Idempotency-Key": `int-amt-${crypto.randomBytes(4).toString("hex")}`,
+            },
+            body: JSON.stringify({ amount: 100_000 }),
+          }),
+          { params: Promise.resolve({ id: projAmtId }) },
+        ),
+      );
+      const chkAmt = (await resAmt.json()) as {
+        orderId: string;
+        reservationId: string;
+        amountPaise: number;
+      };
+      const payAmtId = `pay_int_amt_${crypto.randomBytes(3).toString("hex")}`;
+      mockPaymentOverrides.set(payAmtId, {
+        id: payAmtId,
+        order_id: chkAmt.orderId,
+        status: "captured",
+        amount: chkAmt.amountPaise - 5_000,
+        currency: "INR",
+      });
+      const rAmt1 = await finalizePayment({
+        reservationId: chkAmt.reservationId,
+        orderId: chkAmt.orderId,
+        paymentId: payAmtId,
+        source: "webhook_payment_captured",
+      });
+      const rAmt2 = await finalizePayment({
+        reservationId: chkAmt.reservationId,
+        orderId: chkAmt.orderId,
+        paymentId: payAmtId,
+        source: "webhook_payment_captured",
+      });
+      expect(rAmt1.status).toBe("integrity_failed");
+      expect(rAmt2.status).toBe("integrity_failed");
+      expect(refundCalls.filter((c) => c.paymentId === payAmtId).length).toBe(1);
+      expect((await Project.findById(projAmtId).lean())?.currentFunding).toBe(0);
+      expect((await Project.findById(projAmtId).lean())?.reservedFunding).toBe(0);
+      const payAmtDoc = await Payment.findOne({ reservationId: chkAmt.reservationId }).lean();
+      expect(payAmtDoc?.status).toBe("failed");
+      expect(payAmtDoc?.lastError).toMatch(/payment\.amount mismatch/);
+      const amtAudit = await AuditLog.findOne({
+        investmentId: `payint_${chkAmt.reservationId}`,
+        eventType: "PAYMENT_INTEGRITY_FAILED",
+      }).lean();
+      expect(amtAudit).not.toBeNull();
+      if (amtAudit?._id) createdExtraAuditIds.push(amtAudit._id.toString());
+
+      // C2: Amount mismatch while only authorized -> fails integrity with 0 refunds
+      const projAmtAuthId = await createTestProject();
+      const resAmtAuth = await runWithToken(investorToken, () =>
+        checkoutPost(
+          new Request(`http://localhost/api/projects/${projAmtAuthId}/checkout`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Idempotency-Key": `int-amt-auth-${crypto.randomBytes(4).toString("hex")}`,
+            },
+            body: JSON.stringify({ amount: 100_000 }),
+          }),
+          { params: Promise.resolve({ id: projAmtAuthId }) },
+        ),
+      );
+      const chkAmtAuth = (await resAmtAuth.json()) as {
+        orderId: string;
+        reservationId: string;
+        amountPaise: number;
+      };
+      const payAmtAuthId = `pay_int_amt_auth_${crypto.randomBytes(3).toString("hex")}`;
+      mockPaymentOverrides.set(payAmtAuthId, {
+        id: payAmtAuthId,
+        order_id: chkAmtAuth.orderId,
+        status: "authorized",
+        amount: chkAmtAuth.amountPaise - 100,
+        currency: "INR",
+      });
+      const rAmtAuth = await finalizePayment({
+        reservationId: chkAmtAuth.reservationId,
+        orderId: chkAmtAuth.orderId,
+        paymentId: payAmtAuthId,
+        source: "verify",
+      });
+      expect(rAmtAuth.status).toBe("integrity_failed");
+      expect(refundCalls.filter((c) => c.paymentId === payAmtAuthId).length).toBe(0);
+      const amtAuthAudit = await AuditLog.findOne({
+        investmentId: `payint_${chkAmtAuth.reservationId}`,
+        eventType: "PAYMENT_INTEGRITY_FAILED",
+      }).lean();
+      expect(amtAuthAudit).not.toBeNull();
+      if (amtAuthAudit?._id) createdExtraAuditIds.push(amtAuthAudit._id.toString());
+
+      // C3: Currency mismatch ("USD") on captured payment -> no commit, AuditLog, Payment failed, refund once
+      const projCurId = await createTestProject();
+      const resCur = await runWithToken(investorToken, () =>
+        checkoutPost(
+          new Request(`http://localhost/api/projects/${projCurId}/checkout`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Idempotency-Key": `int-cur-${crypto.randomBytes(4).toString("hex")}`,
+            },
+            body: JSON.stringify({ amount: 100_000 }),
+          }),
+          { params: Promise.resolve({ id: projCurId }) },
+        ),
+      );
+      const chkCur = (await resCur.json()) as {
+        orderId: string;
+        reservationId: string;
+        amountPaise: number;
+      };
+      const payCurId = `pay_int_cur_${crypto.randomBytes(3).toString("hex")}`;
+      mockPaymentOverrides.set(payCurId, {
+        id: payCurId,
+        order_id: chkCur.orderId,
+        status: "captured",
+        amount: chkCur.amountPaise,
+        currency: "USD",
+      });
+      const rCur = await finalizePayment({
+        reservationId: chkCur.reservationId,
+        orderId: chkCur.orderId,
+        paymentId: payCurId,
+        source: "webhook_payment_captured",
+      });
+      expect(rCur.status).toBe("integrity_failed");
+      expect(refundCalls.filter((c) => c.paymentId === payCurId).length).toBe(1);
+      expect((await Project.findById(projCurId).lean())?.currentFunding).toBe(0);
+      expect(
+        (await Payment.findOne({ reservationId: chkCur.reservationId }).lean())?.status,
+      ).toBe("failed");
+      const curAudit = await AuditLog.findOne({
+        investmentId: `payint_${chkCur.reservationId}`,
+        eventType: "PAYMENT_INTEGRITY_FAILED",
+      }).lean();
+      expect(curAudit).not.toBeNull();
+      if (curAudit?._id) createdExtraAuditIds.push(curAudit._id.toString());
+
+      // C4: order_id mismatch on captured payment -> no commit, AuditLog, Payment failed, refund once
+      const projOrdId = await createTestProject();
+      const resOrd = await runWithToken(investorToken, () =>
+        checkoutPost(
+          new Request(`http://localhost/api/projects/${projOrdId}/checkout`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Idempotency-Key": `int-ord-${crypto.randomBytes(4).toString("hex")}`,
+            },
+            body: JSON.stringify({ amount: 100_000 }),
+          }),
+          { params: Promise.resolve({ id: projOrdId }) },
+        ),
+      );
+      const chkOrd = (await resOrd.json()) as {
+        orderId: string;
+        reservationId: string;
+        amountPaise: number;
+      };
+      const payOrdId = `pay_int_ord_${crypto.randomBytes(3).toString("hex")}`;
+      mockPaymentOverrides.set(payOrdId, {
+        id: payOrdId,
+        order_id: "order_mismatch_other",
+        status: "captured",
+        amount: chkOrd.amountPaise,
+        currency: "INR",
+      });
+      const rOrd = await finalizePayment({
+        reservationId: chkOrd.reservationId,
+        orderId: chkOrd.orderId,
+        paymentId: payOrdId,
+        source: "webhook_payment_captured",
+      });
+      expect(rOrd.status).toBe("integrity_failed");
+      expect(refundCalls.filter((c) => c.paymentId === payOrdId).length).toBe(1);
+      expect((await Project.findById(projOrdId).lean())?.currentFunding).toBe(0);
+      expect(
+        (await Payment.findOne({ reservationId: chkOrd.reservationId }).lean())?.status,
+      ).toBe("failed");
+      const ordAudit = await AuditLog.findOne({
+        investmentId: `payint_${chkOrd.reservationId}`,
+        eventType: "PAYMENT_INTEGRITY_FAILED",
+      }).lean();
+      expect(ordAudit).not.toBeNull();
+      if (ordAudit?._id) createdExtraAuditIds.push(ordAudit._id.toString());
+
+      // Case D: releaseReservation on paid order finalizes; on authorized-only order keeps capacity before expiry and releases cleanly after expiry
+      const projRelId = await createTestProject();
+      const resRelPaid = await runWithToken(investorToken, () =>
+        checkoutPost(
+          new Request(`http://localhost/api/projects/${projRelId}/checkout`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Idempotency-Key": `rel-paid-${crypto.randomBytes(4).toString("hex")}`,
+            },
+            body: JSON.stringify({ amount: 100_000 }),
+          }),
+          { params: Promise.resolve({ id: projRelId }) },
+        ),
+      );
+      const chkRelPaid = (await resRelPaid.json()) as {
+        orderId: string;
+        reservationId: string;
+        amountPaise: number;
+      };
+      const payRelPaidId = `pay_rel_paid_${crypto.randomBytes(3).toString("hex")}`;
+      mockOrderOverrides.set(chkRelPaid.orderId, {
+        status: "paid",
+        amount: chkRelPaid.amountPaise,
+        items: [
+          {
+            id: payRelPaidId,
+            order_id: chkRelPaid.orderId,
+            status: "captured",
+            amount: chkRelPaid.amountPaise,
+            currency: "INR",
+          },
+        ],
+      });
+      mockPaymentOverrides.set(payRelPaidId, {
+        id: payRelPaidId,
+        order_id: chkRelPaid.orderId,
+        status: "captured",
+        amount: chkRelPaid.amountPaise,
+        currency: "INR",
+      });
+      const relPaidOutcome = await releaseReservation({
+        projectId: projRelId,
+        reservationId: chkRelPaid.reservationId,
+        orderId: chkRelPaid.orderId,
+      });
+      expect(relPaidOutcome.action).toBe("finalized_instead");
+
+      const resRelAuth = await runWithToken(otherInvestorToken, () =>
+        checkoutPost(
+          new Request(`http://localhost/api/projects/${projRelId}/checkout`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Idempotency-Key": `rel-auth-${crypto.randomBytes(4).toString("hex")}`,
+            },
+            body: JSON.stringify({ amount: 100_000 }),
+          }),
+          { params: Promise.resolve({ id: projRelId }) },
+        ),
+      );
+      const chkRelAuth = (await resRelAuth.json()) as {
+        orderId: string;
+        reservationId: string;
+        amountPaise: number;
+      };
+      const payRelAuthId = `pay_rel_auth_${crypto.randomBytes(3).toString("hex")}`;
+      mockOrderOverrides.set(chkRelAuth.orderId, {
+        status: "attempted",
+        amount: chkRelAuth.amountPaise,
+        items: [
+          {
+            id: payRelAuthId,
+            order_id: chkRelAuth.orderId,
+            status: "authorized",
+            amount: chkRelAuth.amountPaise,
+            currency: "INR",
+          },
+        ],
+      });
+      mockPaymentOverrides.set(payRelAuthId, {
+        id: payRelAuthId,
+        order_id: chkRelAuth.orderId,
+        status: "authorized",
+        amount: chkRelAuth.amountPaise,
+        currency: "INR",
+      });
+
+      const relBeforeExpiry = await releaseReservation({
+        projectId: projRelId,
+        reservationId: chkRelAuth.reservationId,
+        orderId: chkRelAuth.orderId,
+      });
+      expect(relBeforeExpiry).toEqual({ action: "noop", reason: "awaiting_capture" });
+
+      const projBeforeExpiry = await Project.findById(projRelId).lean();
+      expect(projBeforeExpiry?.currentFunding).toBe(100_000);
+      expect(projBeforeExpiry?.reservedFunding).toBe(100_000);
+
+      // Advance reservation + payment expiry into the past -> releaseReservation releases capacity cleanly once
+      const past = new Date(Date.now() - 60_000);
+      await Project.updateOne(
+        { _id: projRelId, "reservations.reservationId": chkRelAuth.reservationId },
+        { $set: { "reservations.$.expiresAt": past } },
+      );
+      await Payment.updateOne(
+        { reservationId: chkRelAuth.reservationId },
+        { $set: { expiresAt: past } },
+      );
+
+      const relAfterExpiry = await releaseReservation({
+        projectId: projRelId,
+        reservationId: chkRelAuth.reservationId,
+        orderId: chkRelAuth.orderId,
+      });
+      expect(relAfterExpiry).toEqual({ action: "released" });
+
+      const projAfterExpiry = await Project.findById(projRelId).lean();
+      expect(projAfterExpiry?.currentFunding).toBe(100_000);
+      expect(projAfterExpiry?.reservedFunding).toBe(0);
+      expect(
+        (await Payment.findOne({ reservationId: chkRelAuth.reservationId }).lean())?.status,
+      ).toBe("expired");
     });
   });
 });

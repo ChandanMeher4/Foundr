@@ -8,7 +8,13 @@ import {
   cancelLifecycleJobs,
   enqueueInvestmentFlow,
 } from "./queue";
-import { getRazorpayClient, sanitizeJobIdSegment } from "./razorpay";
+import {
+  type RazorpayClientLike,
+  type RazorpayOrderSummary,
+  type RazorpayPaymentEntity,
+  getRazorpayClient,
+  sanitizeJobIdSegment,
+} from "./razorpay";
 import { publishFundingUpdate } from "./redis";
 import { recordTrendingEvent } from "./trending";
 import AuditLog from "../models/AuditLog";
@@ -26,7 +32,7 @@ export const ALLOWED_PAYMENT_TRANSITIONS: Record<PaymentStatus, PaymentStatus[]>
     created: ["authorized", "captured", "failed", "expired"],
     authorized: ["captured", "failed", "expired"],
     failed: ["authorized", "captured", "expired"],
-    expired: ["captured", "refund_pending"],
+    expired: ["captured", "failed", "refund_pending"],
     captured: ["refund_pending", "refunded"],
     refund_pending: ["refunded"],
     refunded: [],
@@ -407,20 +413,365 @@ async function completeCommittedFinalize(input: {
   }
 }
 
+interface CaptureIntegrityCheckInput {
+  payment: LeanPaymentDoc;
+  fetchedPayment: RazorpayPaymentEntity | null;
+  webhookOrderId?: string;
+  webhookCurrency?: string;
+  webhookAmountPaise?: number;
+  expectedProjectId?: string;
+  expectedUserId?: string;
+  projectDoc: {
+    _id: mongoose.Types.ObjectId;
+    reservations?: ProjectReservationRecord[];
+  } | null;
+  userExists: boolean;
+}
+
+function collectCaptureIntegrityErrors(ctx: CaptureIntegrityCheckInput): string[] {
+  const errors: string[] = [];
+  const { payment, fetchedPayment, projectDoc, userExists } = ctx;
+
+  if (!Number.isSafeInteger(payment.amountPaise) || payment.amountPaise < 100) {
+    errors.push(`Invalid stored Payment.amountPaise (${String(payment.amountPaise)})`);
+  }
+  if (!projectDoc) {
+    errors.push(`Project ${payment.projectId.toString()} does not exist`);
+  }
+  if (!userExists) {
+    errors.push(`User ${payment.userId.toString()} does not exist`);
+  }
+  if (
+    ctx.expectedProjectId &&
+    ctx.expectedProjectId !== payment.projectId.toString()
+  ) {
+    errors.push(
+      `Project mismatch: expected ${payment.projectId.toString()}, got ${ctx.expectedProjectId}`,
+    );
+  }
+  if (ctx.expectedUserId && ctx.expectedUserId !== payment.userId.toString()) {
+    errors.push(
+      `User mismatch: expected ${payment.userId.toString()}, got ${ctx.expectedUserId}`,
+    );
+  }
+
+  const matchedRes = projectDoc?.reservations?.find(
+    (r) => r.reservationId === payment.reservationId,
+  );
+  if (matchedRes) {
+    if (matchedRes.userId.toString() !== payment.userId.toString()) {
+      errors.push(
+        `Reservation user mismatch: reservation=${matchedRes.userId.toString()}, payment=${payment.userId.toString()}`,
+      );
+    }
+    if (
+      !Number.isSafeInteger(matchedRes.amount) ||
+      matchedRes.amount * 100 !== payment.amountPaise
+    ) {
+      errors.push(
+        `Reservation amount mismatch: reservationPaise=${matchedRes.amount * 100}, paymentPaise=${payment.amountPaise}`,
+      );
+    }
+  }
+
+  if (ctx.webhookOrderId && ctx.webhookOrderId !== payment.orderId) {
+    errors.push(
+      `Webhook order_id mismatch: expected ${payment.orderId}, got ${ctx.webhookOrderId}`,
+    );
+  }
+  if (
+    ctx.webhookCurrency !== undefined &&
+    ctx.webhookCurrency.trim().toUpperCase() !== "INR"
+  ) {
+    errors.push(
+      `Webhook currency mismatch: expected INR, got ${ctx.webhookCurrency}`,
+    );
+  }
+  if (
+    ctx.webhookAmountPaise !== undefined &&
+    (!Number.isSafeInteger(ctx.webhookAmountPaise) ||
+      ctx.webhookAmountPaise !== payment.amountPaise)
+  ) {
+    errors.push(
+      `Webhook amount mismatch: expected ${payment.amountPaise}, got ${String(ctx.webhookAmountPaise)}`,
+    );
+  }
+
+  if (fetchedPayment) {
+    if (fetchedPayment.order_id !== payment.orderId) {
+      errors.push(
+        `Razorpay payment.order_id mismatch: expected ${payment.orderId}, got ${fetchedPayment.order_id}`,
+      );
+    }
+    if ((fetchedPayment.currency || "").trim().toUpperCase() !== "INR") {
+      errors.push(
+        `Razorpay payment.currency mismatch: expected INR, got ${String(fetchedPayment.currency || "")}`,
+      );
+    }
+    if (
+      !Number.isSafeInteger(fetchedPayment.amount) ||
+      fetchedPayment.amount !== payment.amountPaise
+    ) {
+      errors.push(
+        `Razorpay payment.amount mismatch: expected ${payment.amountPaise}, got ${String(fetchedPayment.amount)}`,
+      );
+    }
+  }
+
+  return errors;
+}
+
+async function fetchAuthoritativePaymentState(input: {
+  client: RazorpayClientLike;
+  payment: LeanPaymentDoc;
+  effectivePaymentId?: string;
+  requireOrderPaid?: boolean;
+}): Promise<{
+  fetchedOrder: RazorpayOrderSummary | null;
+  fetchedPayment: RazorpayPaymentEntity | null;
+}> {
+  const { client, payment, effectivePaymentId, requireOrderPaid } = input;
+  let fetchedOrder: RazorpayOrderSummary | null = null;
+  let fetchedPayment: RazorpayPaymentEntity | null = null;
+
+  if (requireOrderPaid) {
+    fetchedOrder = await client.orders.fetch(payment.orderId);
+    const orderPayments = await client.orders.fetchPayments(payment.orderId);
+    const items = orderPayments.items || [];
+    const chosenItem =
+      (effectivePaymentId
+        ? items.find(
+            (i) => i.id === effectivePaymentId && i.status === "captured",
+          )
+        : undefined) ||
+      items.find((i) => i.status === "captured") ||
+      (effectivePaymentId
+        ? items.find((i) => i.id === effectivePaymentId)
+        : undefined) ||
+      items[0];
+
+    if (chosenItem?.id) {
+      fetchedPayment = await client.payments.fetch(chosenItem.id).catch(() => ({
+        id: chosenItem.id,
+        order_id: chosenItem.order_id || payment.orderId,
+        status: chosenItem.status,
+        amount: chosenItem.amount,
+        currency: chosenItem.currency,
+      }));
+    } else if (effectivePaymentId) {
+      fetchedPayment = await client.payments.fetch(effectivePaymentId);
+    }
+
+    return { fetchedOrder, fetchedPayment };
+  }
+
+  if (effectivePaymentId) {
+    fetchedPayment = await client.payments.fetch(effectivePaymentId);
+    return { fetchedOrder, fetchedPayment };
+  }
+
+  const orderPayments = await client.orders.fetchPayments(payment.orderId);
+  const items = orderPayments.items || [];
+  const chosenItem =
+    items.find((i) => i.status === "captured") ||
+    items.find((i) => i.status === "authorized") ||
+    items[0];
+  if (chosenItem?.id) {
+    fetchedPayment = await client.payments.fetch(chosenItem.id).catch(() => ({
+      id: chosenItem.id,
+      order_id: chosenItem.order_id || payment.orderId,
+      status: chosenItem.status,
+      amount: chosenItem.amount,
+      currency: chosenItem.currency,
+    }));
+  }
+
+  return { fetchedOrder, fetchedPayment };
+}
+
+async function handleCaptureIntegrityFailure(input: {
+  client: RazorpayClientLike;
+  payment: LeanPaymentDoc;
+  fetchedPayment: RazorpayPaymentEntity | null;
+  effectivePaymentId?: string;
+  reasons: string[];
+  webhookOrderId?: string;
+  webhookAmountPaise?: number;
+  webhookCurrency?: string;
+  source?: string;
+  reservationBelongsToUser: boolean;
+}): Promise<{
+  status: "integrity_failed";
+  refundId?: string;
+  reservationId: string;
+}> {
+  const { payment, fetchedPayment, reasons, client } = input;
+  const reservationId = payment.reservationId;
+  const projectIdStr = payment.projectId.toString();
+  const targetPaymentId = fetchedPayment?.id || input.effectivePaymentId;
+  const lastError = `INTEGRITY: ${reasons.join("; ")}`.slice(0, 500);
+
+  console.error(
+    `[Payment INTEGRITY] Refusing commit for reservation=${reservationId} order=${payment.orderId}: ${reasons.join("; ")}`,
+  );
+
+  let refundId =
+    payment.refundId && !payment.refundId.startsWith("claiming_")
+      ? payment.refundId
+      : undefined;
+
+  if (fetchedPayment?.status === "captured" && targetPaymentId && !refundId) {
+    const claimed = await Payment.findOneAndUpdate(
+      {
+        reservationId,
+        $or: [
+          { refundId: { $exists: false } },
+          { refundId: null },
+          { refundId: "" },
+        ],
+      },
+      {
+        $set: {
+          status: "failed",
+          lastError,
+          paymentId: targetPaymentId,
+          refundId: `claiming_${Date.now()}`,
+        },
+      },
+      { returnDocument: "before" },
+    );
+
+    if (claimed) {
+      try {
+        const refundRes = await client.payments.refund(targetPaymentId, {
+          ...(Number.isSafeInteger(fetchedPayment.amount) &&
+          fetchedPayment.amount > 0
+            ? { amount: fetchedPayment.amount }
+            : {}),
+          notes: {
+            reservationId,
+            projectId: projectIdStr,
+            reason: "payment_integrity_mismatch",
+          },
+        });
+        refundId = refundRes.id;
+        await Payment.updateOne(
+          { reservationId },
+          {
+            $set: {
+              status: "failed",
+              lastError,
+              paymentId: targetPaymentId,
+              refundId,
+            },
+          },
+        );
+      } catch (refundErr) {
+        await Payment.updateOne(
+          { reservationId, refundId: /^claiming_/ },
+          { $unset: { refundId: "" } },
+        );
+        throw refundErr;
+      }
+    } else {
+      const latest = await Payment.findOne({ reservationId })
+        .select("refundId")
+        .lean<{ refundId?: string } | null>();
+      if (latest?.refundId && !latest.refundId.startsWith("claiming_")) {
+        refundId = latest.refundId;
+      }
+    }
+  } else {
+    const transitioned = await transitionPaymentStatus({
+      reservationId,
+      to: "failed",
+      setFields: {
+        lastError,
+        ...(targetPaymentId ? { paymentId: targetPaymentId } : {}),
+      },
+      logContext: "integrity_failure",
+    });
+    if (!transitioned) {
+      await Payment.updateOne(
+        { reservationId },
+        {
+          $set: {
+            status: "failed",
+            lastError,
+            ...(targetPaymentId ? { paymentId: targetPaymentId } : {}),
+          },
+        },
+      );
+    }
+  }
+
+  if (input.reservationBelongsToUser) {
+    await removeProjectReservationAtomic(projectIdStr, reservationId).catch(
+      () => {},
+    );
+  }
+
+  await AuditLog.findOneAndUpdate(
+    { investmentId: `payint_${reservationId}` },
+    {
+      $setOnInsert: {
+        investmentId: `payint_${reservationId}`,
+        eventType: "PAYMENT_INTEGRITY_FAILED",
+        projectId: payment.projectId,
+        userId: payment.userId,
+        amount: Number.isSafeInteger(payment.amountPaise)
+          ? Math.round(payment.amountPaise / 100)
+          : 0,
+        idempotencyKey: reservationId,
+        ip: "razorpay",
+        metadata: {
+          reasons,
+          source: input.source,
+          expectedOrderId: payment.orderId,
+          actualOrderId: fetchedPayment?.order_id || input.webhookOrderId,
+          expectedAmountPaise: payment.amountPaise,
+          actualAmountPaise: fetchedPayment?.amount ?? input.webhookAmountPaise,
+          expectedCurrency: "INR",
+          actualCurrency: fetchedPayment?.currency || input.webhookCurrency,
+          fetchedStatus: fetchedPayment?.status,
+          paymentId: targetPaymentId,
+          refundId,
+        },
+      },
+    },
+    { upsert: true },
+  );
+
+  return { status: "integrity_failed", refundId, reservationId };
+}
+
 /**
  * Idempotent payment finalizer shared across webhooks, /verify follow-up, and release-check recovery.
- * Commits reserved capacity atomically, or attempts late re-reservation / test refund after expiry.
+ * Verifies capture status & payment integrity directly against Razorpay before committing capacity,
+ * or attempts late re-reservation / test refund after expiry.
  */
 export async function finalizePayment(input: {
   reservationId?: string;
   orderId?: string;
   paymentId?: string;
   amountPaise?: number;
+  currency?: string;
+  webhookOrderId?: string;
+  expectedProjectId?: string;
+  expectedUserId?: string;
+  requireOrderPaid?: boolean;
+  source?:
+    | "verify"
+    | "webhook_payment_captured"
+    | "webhook_order_paid"
+    | "release_check";
 }): Promise<{
   status:
     | "finalized"
     | "finalized_late"
     | "already_finalized"
+    | "awaiting_capture"
+    | "integrity_failed"
     | "refund_initiated"
     | "already_refunding"
     | "payment_not_found";
@@ -438,15 +789,6 @@ export async function finalizePayment(input: {
 
   if (!payment) {
     return { status: "payment_not_found" };
-  }
-
-  if (
-    input.amountPaise !== undefined &&
-    input.amountPaise !== payment.amountPaise
-  ) {
-    throw new Error(
-      `Amount mismatch finalizing payment ${payment.reservationId}: expected ${payment.amountPaise}, got ${input.amountPaise}`,
-    );
   }
 
   const reservationId = payment.reservationId;
@@ -488,6 +830,19 @@ export async function finalizePayment(input: {
     return { status: "already_finalized", reservationId };
   }
 
+  if (
+    payment.status === "failed" &&
+    payment.lastError?.startsWith("INTEGRITY:") &&
+    payment.refundId &&
+    !payment.refundId.startsWith("claiming_")
+  ) {
+    return {
+      status: "integrity_failed",
+      refundId: payment.refundId,
+      reservationId,
+    };
+  }
+
   if (payment.status === "refunded" || payment.status === "refund_pending") {
     if (payment.refundId) {
       return {
@@ -497,6 +852,74 @@ export async function finalizePayment(input: {
       };
     }
   }
+
+  const { client } = getRazorpayClient();
+  const [{ fetchedOrder, fetchedPayment }, projectMeta, userExists] =
+    await Promise.all([
+      fetchAuthoritativePaymentState({
+        client,
+        payment,
+        effectivePaymentId,
+        requireOrderPaid: input.requireOrderPaid,
+      }),
+      Project.findById(payment.projectId)
+        .select("_id reservations")
+        .lean<{
+          _id: mongoose.Types.ObjectId;
+          reservations?: ProjectReservationRecord[];
+        } | null>(),
+      User.exists({ _id: payment.userId }).then(Boolean),
+    ]);
+
+  const integrityErrors = collectCaptureIntegrityErrors({
+    payment,
+    fetchedPayment,
+    webhookOrderId: input.webhookOrderId,
+    webhookCurrency: input.currency,
+    webhookAmountPaise: input.amountPaise,
+    expectedProjectId: input.expectedProjectId,
+    expectedUserId: input.expectedUserId,
+    projectDoc: projectMeta,
+    userExists,
+  });
+
+  if (integrityErrors.length > 0) {
+    const matchedRes = projectMeta?.reservations?.find(
+      (r) => r.reservationId === reservationId,
+    );
+    return handleCaptureIntegrityFailure({
+      client,
+      payment,
+      fetchedPayment,
+      effectivePaymentId,
+      reasons: integrityErrors,
+      webhookOrderId: input.webhookOrderId,
+      webhookAmountPaise: input.amountPaise,
+      webhookCurrency: input.currency,
+      source: input.source,
+      reservationBelongsToUser: Boolean(
+        matchedRes && matchedRes.userId.toString() === payment.userId.toString(),
+      ),
+    });
+  }
+
+  // Capture verification: NEVER commit unless Razorpay confirms captured (and paid order for order.paid)
+  const orderSatisfied = !input.requireOrderPaid || fetchedOrder?.status === "paid";
+  const paymentCaptured = fetchedPayment?.status === "captured";
+
+  if (!orderSatisfied || !paymentCaptured) {
+    if (fetchedPayment?.status === "authorized" && payment.status === "created") {
+      await transitionPaymentStatus({
+        reservationId,
+        to: "authorized",
+        setFields: { paymentId: fetchedPayment.id },
+        logContext: "finalize_awaiting_capture",
+      });
+    }
+    return { status: "awaiting_capture", reservationId };
+  }
+
+  const verifiedPaymentId = fetchedPayment.id || effectivePaymentId;
 
   const investmentObjectId = new mongoose.Types.ObjectId();
   const investmentId = investmentObjectId.toString();
@@ -544,7 +967,7 @@ export async function finalizePayment(input: {
       investmentId,
       amountRupees,
       committedAt,
-      effectivePaymentId,
+      effectivePaymentId: verifiedPaymentId,
     });
     return { status: "finalized", investmentId, reservationId };
   }
@@ -566,7 +989,7 @@ export async function finalizePayment(input: {
     await transitionPaymentStatus({
       reservationId,
       to: "captured",
-      ...(effectivePaymentId ? { setFields: { paymentId: effectivePaymentId } } : {}),
+      ...(verifiedPaymentId ? { setFields: { paymentId: verifiedPaymentId } } : {}),
       logContext: "concurrent_finalize_winner",
     });
     return { status: "already_finalized", reservationId };
@@ -622,13 +1045,12 @@ export async function finalizePayment(input: {
       investmentId,
       amountRupees,
       committedAt,
-      effectivePaymentId,
+      effectivePaymentId: verifiedPaymentId,
     });
     return { status: "finalized_late", investmentId, reservationId };
   }
 
   // 3. Capacity is gone or project is no longer Live (including Expired) -> Refund test payment
-  // Ensure payment moves into `expired` first if it was still `created|authorized|failed`
   if (
     payment.status === "created" ||
     payment.status === "authorized" ||
@@ -637,7 +1059,7 @@ export async function finalizePayment(input: {
     await transitionPaymentStatus({
       reservationId,
       to: "expired",
-      ...(effectivePaymentId ? { setFields: { paymentId: effectivePaymentId } } : {}),
+      ...(verifiedPaymentId ? { setFields: { paymentId: verifiedPaymentId } } : {}),
       logContext: "late_payment_before_refund",
     });
   }
@@ -655,21 +1077,12 @@ export async function finalizePayment(input: {
     await transitionPaymentStatus({
       reservationId,
       to: "refund_pending",
-      ...(effectivePaymentId ? { setFields: { paymentId: effectivePaymentId } } : {}),
+      ...(verifiedPaymentId ? { setFields: { paymentId: verifiedPaymentId } } : {}),
       logContext: "late_payment_refund_start",
     });
   }
 
-  const { client } = getRazorpayClient();
-  let targetRefundPaymentId = effectivePaymentId;
-  if (!targetRefundPaymentId && client.orders.fetchPayments) {
-    const orderPayments = await client.orders.fetchPayments(payment.orderId);
-    const paidItem = orderPayments.items?.find(
-      (item) => item.status === "captured" || item.status === "authorized",
-    );
-    targetRefundPaymentId = paidItem?.id || orderPayments.items?.[0]?.id;
-  }
-
+  const targetRefundPaymentId = verifiedPaymentId;
   if (!targetRefundPaymentId) {
     throw new Error(
       `Cannot initiate refund for reservation ${reservationId}: missing Razorpay paymentId.`,
@@ -792,21 +1205,41 @@ export async function releaseReservation(input: {
   if (effectiveOrderId) {
     const { client } = getRazorpayClient();
     const order = await client.orders.fetch(effectiveOrderId);
-    if (order.status === "paid") {
-      let paidPaymentId = existingPayment?.paymentId;
-      if (!paidPaymentId && client.orders.fetchPayments) {
-        const orderPayments = await client.orders.fetchPayments(effectiveOrderId);
-        paidPaymentId = orderPayments.items?.find(
-          (item) => item.status === "captured",
-        )?.id;
-      }
-      await finalizePayment({
+    const orderPayments = await client.orders.fetchPayments(effectiveOrderId);
+    const items = orderPayments.items || [];
+    const capturedItem = items.find((item) => item.status === "captured");
+    const authorizedItem = items.find((item) => item.status === "authorized");
+
+    if (order.status === "paid" && capturedItem) {
+      const fin = await finalizePayment({
         reservationId: input.reservationId,
         orderId: effectiveOrderId,
-        paymentId: paidPaymentId,
-        amountPaise: order.amount,
+        paymentId: capturedItem.id,
+        amountPaise: capturedItem.amount,
+        currency: capturedItem.currency,
+        webhookOrderId: capturedItem.order_id,
+        requireOrderPaid: true,
+        source: "release_check",
       });
-      return { action: "finalized_instead", reason: "razorpay_order_paid" };
+      if (
+        fin.status === "finalized" ||
+        fin.status === "finalized_late" ||
+        fin.status === "already_finalized"
+      ) {
+        return { action: "finalized_instead", reason: "razorpay_order_paid" };
+      }
+      return { action: "noop", reason: fin.status };
+    }
+
+    const notYetExpired =
+      new Date(pendingReservation.expiresAt).getTime() > Date.now();
+    const isAuthorizedOnly =
+      existingPayment?.status === "authorized" ||
+      Boolean(authorizedItem) ||
+      (order.status === "paid" && !capturedItem);
+
+    if (isAuthorizedOnly && notYetExpired) {
+      return { action: "noop", reason: "awaiting_capture" };
     }
   }
 
@@ -859,6 +1292,7 @@ interface RazorpayWebhookPayload {
         id?: string;
         order_id?: string;
         amount?: number;
+        currency?: string;
         status?: string;
         error_description?: string;
         notes?: Record<string, string>;
@@ -869,6 +1303,7 @@ interface RazorpayWebhookPayload {
         id?: string;
         receipt?: string;
         amount?: number;
+        currency?: string;
         status?: string;
         notes?: Record<string, string>;
       };
@@ -956,14 +1391,28 @@ export async function processWebhookEventById(
       const targetReservationId =
         payment?.reservationId || receiptReservationId;
       const targetOrderId = payment?.orderId || orderId;
-      const amountPaise =
-        paymentEntity?.amount ?? orderEntity?.amount ?? payment?.amountPaise;
+      const amountPaise = paymentEntity?.amount ?? orderEntity?.amount;
+      const currency = paymentEntity?.currency ?? orderEntity?.currency;
+      const webhookOrderId = paymentEntity?.order_id || orderEntity?.id;
+      const expectedProjectId =
+        paymentEntity?.notes?.projectId || orderEntity?.notes?.projectId;
+      const expectedUserId =
+        paymentEntity?.notes?.userId || orderEntity?.notes?.userId;
 
       const fin = await finalizePayment({
         reservationId: targetReservationId,
         orderId: targetOrderId,
         paymentId,
         amountPaise,
+        currency,
+        webhookOrderId,
+        expectedProjectId,
+        expectedUserId,
+        requireOrderPaid: webhookDoc.event === "order.paid",
+        source:
+          webhookDoc.event === "order.paid"
+            ? "webhook_order_paid"
+            : "webhook_payment_captured",
       });
       detail = fin.status;
       break;

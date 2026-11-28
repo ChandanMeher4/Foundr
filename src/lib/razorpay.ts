@@ -10,6 +10,14 @@ export interface RazorpayOrderCreateInput {
   currency: "INR";
   receipt: string;
   notes?: Record<string, string>;
+  payment?: {
+    capture: "automatic" | "manual";
+    capture_options?: {
+      automatic_expiry_period: number;
+      manual_expiry_period: number;
+      refund_speed: "optimum" | "normal";
+    };
+  };
 }
 
 export interface RazorpayOrderSummary {
@@ -21,7 +29,17 @@ export interface RazorpayOrderSummary {
   receipt?: string;
 }
 
-export interface RazorpayOrderPaymentItem {
+export interface RazorpayPaymentEntity {
+  id: string;
+  order_id: string;
+  status: string;
+  amount: number;
+  currency?: string;
+  captured?: boolean;
+  error_description?: string | null;
+}
+
+export interface RazorpayOrderPaymentItem extends Partial<RazorpayPaymentEntity> {
   id: string;
   status: string;
   amount: number;
@@ -38,11 +56,12 @@ export interface RazorpayClientLike {
   orders: {
     create(params: RazorpayOrderCreateInput): Promise<RazorpayOrderSummary>;
     fetch(orderId: string): Promise<RazorpayOrderSummary>;
-    fetchPayments?: (orderId: string) => Promise<{
+    fetchPayments: (orderId: string) => Promise<{
       items?: RazorpayOrderPaymentItem[];
     }>;
   };
   payments: {
+    fetch: (paymentId: string) => Promise<RazorpayPaymentEntity>;
     refund(
       paymentId: string,
       params?: { amount?: number; notes?: Record<string, string> },

@@ -91,7 +91,6 @@ export async function POST(req: Request) {
           reservationId: payment.reservationId,
           orderId,
           paymentId,
-          amountPaise: payment.amountPaise,
         });
       } catch (queueErr) {
         console.warn(

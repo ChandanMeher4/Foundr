@@ -11,6 +11,7 @@ const AuditLogSchema = new Schema(
         "PAYMENT_CAPTURED",
         "RESERVATION_RELEASED",
         "PAYMENT_REFUNDED",
+        "PAYMENT_INTEGRITY_FAILED",
         "DEAD_LETTER_REPLAYED",
       ],
       required: true,
